@@ -1,0 +1,164 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User account information and roles",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["owner", "staff"] },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "Session": {
+      "title": "Workspace Session",
+      "description": "A customer session in the workspace",
+      "type": "object",
+      "properties": {
+        "customerType": { "type": "string", "enum": ["single", "group"] },
+        "userName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "whatsappOptIn": { "type": "boolean" },
+        "roomId": { "type": "string" },
+        "roomName": { "type": "string" },
+        "tableId": { "type": "string" },
+        "tableNumber": { "type": "string" },
+        "groupSize": { "type": "number" },
+        "companions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "phone": { "type": "string" },
+              "joinedAt": { "type": "object" }
+            }
+          }
+        },
+        "startTime": { "type": "number" },
+        "endTime": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "completed"] },
+        "services": { "type": "array" },
+        "pricingType": { "type": "string" },
+        "totalCost": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userName", "phoneNumber", "roomId", "tableId", "startTime", "status", "services", "pricingType", "totalCost", "createdAt"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Workspace room",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["single", "group"] },
+        "code": { "type": "string" },
+        "active": { "type": "boolean" },
+        "totalTables": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "code", "active", "totalTables", "createdAt"]
+    },
+    "Table": {
+      "title": "Table",
+      "description": "Workspace table within a room",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "number": { "type": "string" },
+        "capacity": { "type": "number" },
+        "status": { "type": "string", "enum": ["available", "occupied", "reserved"] },
+        "activeSessionId": { "type": "string" }
+      },
+      "required": ["roomId", "number", "capacity", "status"]
+    },
+    "ServiceItem": {
+      "title": "Service Item",
+      "description": "An available service or product",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" }
+      },
+      "required": ["name", "price", "category"]
+    },
+    "ExpenseCategory": {
+      "title": "Expense Category",
+      "description": "Category for business expenses",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["name", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "A business expense record",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "amount": { "type": "number" },
+        "categoryId": { "type": "string" },
+        "categoryName": { "type": "string" },
+        "date": { "type": "object" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["title", "amount", "categoryId", "categoryName", "date", "createdAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Member monthly subscription",
+      "type": "object",
+      "properties": {
+        "userName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "whatsappOptIn": { "type": "boolean" },
+        "startDate": { "type": "number" },
+        "endDate": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "price": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userName", "phoneNumber", "startDate", "endDate", "isActive", "price", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "UserProfile",
+      "description": "User profiles"
+    },
+    "/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Workspace sessions"
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Workspace rooms"
+    },
+    "/tables/{tableId}": {
+      "schema": "Table",
+      "description": "Workspace tables"
+    },
+    "/services/{serviceId}": {
+      "schema": "ServiceItem",
+      "description": "Available services"
+    },
+    "/expenseCategories/{categoryId}": {
+      "schema": "ExpenseCategory",
+      "description": "Expense categories"
+    },
+    "/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Business expense records"
+    },
+    "/settings/main": {
+      "schema": "object",
+      "description": "Global workspace settings"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Operix Workspace Management",
+  "description": "A professional workspace management system with smart customer seating, room filtering, and capacity-aware table assignment.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
