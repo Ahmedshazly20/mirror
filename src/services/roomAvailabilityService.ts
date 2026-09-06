@@ -17,6 +17,59 @@ export interface RoomConflictInfo {
 }
 
 /**
+ * Normalizes room identifiers to a canonical key to accurately compare physical rooms.
+ * Ensures e.g. 'room-office-2', 'office_2', 'Office 2' resolve to the same physical room,
+ * while 'office-2' and 'office-3' remain strictly distinct.
+ */
+export function getCanonicalRoomKey(roomId?: string | null, roomName?: string | null): string {
+  const normalize = (str: string) => {
+    return str
+      .toLowerCase()
+      .trim()
+      .replace(/^room[-_]/, '')
+      .replace(/[\s\-_]/g, '');
+  };
+
+  if (roomId) {
+    const normId = normalize(roomId);
+    if (normId) return normId;
+  }
+  if (roomName) {
+    const normName = normalize(roomName);
+    if (normName) return normName;
+  }
+  return '';
+}
+
+/**
+ * Checks if two room references refer to the same physical room.
+ */
+export function isSamePhysicalRoom(
+  roomA: { id?: string | null; name?: string | null } | string | null | undefined,
+  roomB: { id?: string | null; name?: string | null } | string | null | undefined
+): boolean {
+  if (!roomA || !roomB) return false;
+
+  const idA = typeof roomA === 'string' ? roomA : roomA.id;
+  const nameA = typeof roomA === 'string' ? undefined : roomA.name;
+
+  const idB = typeof roomB === 'string' ? roomB : roomB.id;
+  const nameB = typeof roomB === 'string' ? undefined : roomB.name;
+
+  // Direct exact matches
+  if (idA && idB && idA === idB) return true;
+  if (nameA && nameB && nameA.trim().toLowerCase() === nameB.trim().toLowerCase()) return true;
+
+  // Canonical keys match
+  const keyA = getCanonicalRoomKey(idA, nameA);
+  const keyB = getCanonicalRoomKey(idB, nameB);
+
+  if (keyA && keyB && keyA === keyB) return true;
+
+  return false;
+}
+
+/**
  * Calculates the active/projected time window [start, end] for a session.
  */
 export function getSessionTimeRange(session: Session, linkedBooking?: Booking | null): { start: number; end: number } {
@@ -39,8 +92,8 @@ export function getSessionTimeRange(session: Session, linkedBooking?: Booking | 
     return { start, end: start + 8 * 3600 * 1000 };
   }
 
-  // Open-ended / default active session: occupied now until at least 1 hour or projected current time
-  const minOngoingEnd = Math.max(Date.now() + 30 * 60 * 1000, start + 60 * 60 * 1000);
+  // Open-ended active session: occupying room right now until at least 1 hour from start or now
+  const minOngoingEnd = Math.max(Date.now() + 60 * 60 * 1000, start + 60 * 60 * 1000);
   return { start, end: minOngoingEnd };
 }
 
@@ -72,19 +125,21 @@ export function checkRoomConflictInMemory(
     return { hasConflict: false };
   }
 
-  // 1. Check against active sessions for this specific room
+  const targetRoom = { id: roomId, name: options?.roomName };
+
+  // 1. Check against active sessions for this specific physical room
   for (const session of allSessions) {
     if (!session || session.status !== 'active') continue;
     if (options?.excludeSessionId && session.id === options.excludeSessionId) continue;
     if (options?.excludeBookingId && session.bookingId === options.excludeBookingId) continue;
 
-    const sessionRoomId = session.roomAssignment?.roomId;
-    const sessionRoomName = session.roomAssignment?.roomName;
+    const sessionRoom = {
+      id: session.roomAssignment?.roomId,
+      name: session.roomAssignment?.roomName
+    };
 
-    const matchesRoom = (sessionRoomId && sessionRoomId === roomId) ||
-      (options?.roomName && sessionRoomName && sessionRoomName.trim().toLowerCase() === options.roomName.trim().toLowerCase());
-
-    if (!matchesRoom) continue;
+    if (!sessionRoom.id && !sessionRoom.name) continue;
+    if (!isSamePhysicalRoom(sessionRoom, targetRoom)) continue;
 
     const linkedBooking = session.bookingId ? allBookings.find(b => b.id === session.bookingId) : null;
     const { start: sessionStart, end: sessionEnd } = getSessionTimeRange(session, linkedBooking);
@@ -107,11 +162,13 @@ export function checkRoomConflictInMemory(
     }
   }
 
-  // 2. Check against other bookings for this specific room
+  // 2. Check against other bookings for this specific physical room
   for (const booking of allBookings) {
     if (!booking || booking.status === 'cancelled') continue;
     if (options?.excludeBookingId && booking.id === options.excludeBookingId) continue;
-    if (booking.roomId !== roomId) continue;
+
+    const bookingRoom = { id: booking.roomId };
+    if (!isSamePhysicalRoom(bookingRoom, targetRoom)) continue;
 
     if (isTimeOverlap(startTime, endTime, booking.startTime, booking.endTime)) {
       const startFmt = format(new Date(booking.startTime), 'hh:mm a');

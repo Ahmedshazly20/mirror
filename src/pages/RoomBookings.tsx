@@ -31,6 +31,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { useWorkspaceStore } from '../store';
 import { bookingService } from '../services/bookingService';
 import { pricingService, DEFAULT_BOOKABLE_ROOMS } from '../services/pricingService';
+import { checkRoomConflictInMemory, isSamePhysicalRoom } from '../services/roomAvailabilityService';
 import { toast } from 'sonner';
 import { format, startOfToday } from 'date-fns';
 import { arSA, enUS } from 'date-fns/locale';
@@ -206,7 +207,7 @@ export default function RoomBookings() {
     return list.filter(r => r.active !== false);
   }, [rooms, settings.rooms]);
 
-  // Instant room-status reactive evaluator
+  // Instant room-status reactive evaluator checking both Bookings and Active Sessions
   const roomStatuses = useMemo(() => {
     if (!selectedTimes) return {};
     const { start, end, formattedDate } = selectedTimes;
@@ -216,37 +217,43 @@ export default function RoomBookings() {
     }> = {};
 
     roomsList.forEach(room => {
-      const sameDayBookings = bookings.filter(b => {
-        if (b.roomId !== room.id) return false;
-        return format(new Date(b.startTime), 'yyyy-MM-dd') === formattedDate;
-      });
+      // 1. Comprehensive overlap conflict evaluation (Active Sessions + Bookings)
+      const conflict = checkRoomConflictInMemory(
+        room.id,
+        start,
+        end,
+        bookings,
+        sessions,
+        { roomName: room.name }
+      );
 
-      const overlap = sameDayBookings.find(b => start < b.endTime && end > b.startTime);
-
-      if (overlap) {
-        const startStr = format(new Date(overlap.startTime), 'HH:mm');
-        const endStr = format(new Date(overlap.endTime), 'HH:mm');
+      if (conflict.hasConflict) {
         statuses[room.id] = {
           status: 'fully_booked',
-          reason: t('bookings.roomUnavailReason', {
-            name: overlap.userName,
-            start: startStr,
-            end: endStr
-          })
-        };
-      } else if (sameDayBookings.length > 0) {
-        statuses[room.id] = {
-          status: 'partially_booked'
+          reason: conflict.errorMessage || t('bookings.roomReservedError')
         };
       } else {
+        // 2. Check if there are other bookings or sessions scheduled on this same date
+        const hasOtherSameDayEvents = bookings.some(b => 
+          b.status !== 'cancelled' &&
+          isSamePhysicalRoom({ id: b.roomId }, { id: room.id, name: room.name }) &&
+          format(new Date(b.startTime), 'yyyy-MM-dd') === formattedDate
+        ) || sessions.some(s => 
+          s.status === 'active' &&
+          isSamePhysicalRoom(
+            { id: s.roomAssignment?.roomId, name: s.roomAssignment?.roomName },
+            { id: room.id, name: room.name }
+          )
+        );
+
         statuses[room.id] = {
-          status: 'available'
+          status: hasOtherSameDayEvents ? 'partially_booked' : 'available'
         };
       }
     });
 
     return statuses;
-  }, [roomsList, bookings, selectedTimes, t]);
+  }, [roomsList, bookings, sessions, selectedTimes, t]);
 
   // Selected room details
   const selectedRoomData = useMemo(() => {
@@ -295,9 +302,24 @@ export default function RoomBookings() {
       return;
     }
 
+    // Direct active conflict check before submission
+    const currentConflict = checkRoomConflictInMemory(
+      roomId,
+      selectedTimes.start,
+      selectedTimes.end,
+      bookings,
+      sessions,
+      { roomName: selectedRoomData?.name }
+    );
+
+    if (currentConflict.hasConflict) {
+      toast.error(currentConflict.errorMessage || t('bookings.roomReservedError'));
+      return;
+    }
+
     const activeStatus = roomStatuses[roomId];
     if (activeStatus?.status === 'fully_booked') {
-      toast.error(t('bookings.roomReservedError'));
+      toast.error(activeStatus.reason || t('bookings.roomReservedError'));
       return;
     }
 
@@ -331,7 +353,7 @@ export default function RoomBookings() {
       setPhoneError(false);
     } catch (err: any) {
       console.error(err);
-      if (err.conflictDetails || err.message === 'ROOM_OVERLAP' || err.message?.includes('تعارض')) {
+      if (err.conflictDetails || err.message === 'ROOM_OVERLAP' || err.message?.includes('تعارض') || err.message?.includes('جلسة نشطة')) {
         toast.error(err.message || t('bookings.roomReservedError'));
       } else if (err.message === 'CUSTOMER_OVERLAP_ERR') {
         toast.error(t('bookings.sameCustomerError'));
@@ -350,8 +372,13 @@ export default function RoomBookings() {
     paidAmount,
     calculatedTotalPrice,
     roomStatuses,
+    selectedRoomData,
+    bookings,
+    sessions,
     isTimeDurationInvalid,
+    isPastTimeBooking,
     validatePhone,
+    isRTL,
     t
   ]);
 

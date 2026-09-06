@@ -22,6 +22,8 @@ import { cn } from '@/lib/utils';
 import { Booking, Room } from '../../../types';
 import { pricingService, mapRoomToPricingKey } from '../../../services/pricingService';
 import { bookingService } from '../../../services/bookingService';
+import { checkRoomConflictInMemory } from '../../../services/roomAvailabilityService';
+import { useWorkspaceStore } from '../../../store';
 import { toast } from 'sonner';
 
 interface EditBookingModalProps {
@@ -41,6 +43,7 @@ export function EditBookingModal({
 }: EditBookingModalProps) {
   const { t, i18n } = useTranslation();
   const isRTL = i18n.language.startsWith('ar');
+  const { sessions } = useWorkspaceStore();
 
   const [dateStr, setDateStr] = useState('');
   const [startTimeStr, setStartTimeStr] = useState('10:00');
@@ -99,17 +102,22 @@ export function EditBookingModal({
     return pricingService.calculateRoomPrice(selectedRoom, durationHours);
   }, [selectedRoom, durationHours]);
 
-  // Overlap check
+  // Overlap check against both bookings and active sessions
   const conflict = useMemo(() => {
-    if (!booking || !startTimestamp || !endTimestamp || isTimeInvalid) return null;
-    return allBookings.find(b => 
-      b.id !== booking.id &&
-      b.roomId === selectedRoomId &&
-      b.status !== 'cancelled' &&
-      startTimestamp < b.endTime &&
-      endTimestamp > b.startTime
+    if (!booking || !startTimestamp || !endTimestamp || isTimeInvalid || !selectedRoomId) return null;
+    const res = checkRoomConflictInMemory(
+      selectedRoomId,
+      startTimestamp,
+      endTimestamp,
+      allBookings,
+      sessions,
+      {
+        excludeBookingId: booking.id,
+        roomName: selectedRoom?.name
+      }
     );
-  }, [booking, allBookings, selectedRoomId, startTimestamp, endTimestamp, isTimeInvalid]);
+    return res.hasConflict ? res : null;
+  }, [booking, allBookings, sessions, selectedRoomId, selectedRoom, startTimestamp, endTimestamp, isTimeInvalid]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -131,7 +139,7 @@ export function EditBookingModal({
     }
 
     if (conflict) {
-      toast.error(t('bookings.roomReservedError'));
+      toast.error(conflict.errorMessage || t('bookings.roomReservedError'));
       return;
     }
 
