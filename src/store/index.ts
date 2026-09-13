@@ -200,9 +200,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const { globalServiceDiscount, pricingRules } = settings;
     
     const startTime = toMillis(session.startTime);
-    const now = toMillis(session.endTime);
-    const diffMs = now - startTime;
-    const diffMinutes = Math.max(diffMs / (1000 * 60), 0);
+    const now = session.endTime ? toMillis(session.endTime) : Date.now();
+    const diffMs = Math.max(now - startTime, 0);
+    const diffMinutes = session.duration !== undefined && session.status === 'completed'
+      ? session.duration
+      : Math.max(diffMs / (1000 * 60), 0);
     
     let timeCost = 0;
     let type: PricingType = session.pricingType || 'hourly';

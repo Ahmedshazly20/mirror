@@ -246,7 +246,7 @@
     "dailyPricing": "الحد الأقصى اليومي: بحد أقصى {{cap}} ج.م لليوم بأكمله.",
     "selectRoom": "اختر الغرفة",
     "optional": "اختياري",
-    "noRoom": "بدون غرفة",
+    "noRoom": "مساحة مشتركة (Shared Space)",
     "full": "ممتلئة",
     "selectTable": "اختر الترابيزة",
     "table": "ترابيزة",

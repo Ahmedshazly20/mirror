@@ -31,12 +31,17 @@ export const bookingService = {
       }
 
       // 2. Check customer overlap (using phone or name in bookings)
-      const bookingsRef = collection(db, 'bookings');
-      const snapshot = await getDocs(query(bookingsRef));
-      const existingBookings = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Booking[];
+      const { useWorkspaceStore } = await import('../store');
+      const storeBookings = useWorkspaceStore.getState().bookings;
+      let existingBookings: Booking[] = storeBookings;
+      if (!existingBookings || existingBookings.length === 0) {
+        const bookingsRef = collection(db, 'bookings');
+        const snapshot = await getDocs(query(bookingsRef));
+        existingBookings = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Booking[];
+      }
 
       const customerOverlap = existingBookings.find(b => 
         b.status !== 'cancelled' &&
@@ -57,11 +62,14 @@ export const bookingService = {
       if (paid >= total && total > 0) paymentStatus = 'paid';
       else if (paid > 0) paymentStatus = 'partially_paid';
 
+      const selectedPaymentMethod = bookingData.paymentMethod || 'cash';
+
       const data = cleanData({
         ...bookingData,
         paidAmount: paid,
         remainingAmount: remaining,
         paymentStatus,
+        paymentMethod: selectedPaymentMethod,
         createdAt: Date.now()
       });
       const docRef = await addDoc(collection(db, 'bookings'), data);
@@ -88,9 +96,9 @@ export const bookingService = {
             bookingId: docRef.id,
             customerId: bookingData.customerId,
             amount: paid,
-            paymentMethod: 'cash',
+            paymentMethod: selectedPaymentMethod,
             date: Date.now(),
-            notes: `عربون حجز غرفة ${docRef.id}`,
+            notes: `عربون حجز غرفة (${bookingData.userName})`,
             skipBookingPaidUpdate: true
           });
         }
@@ -130,11 +138,15 @@ export const bookingService = {
         const checkPhone = data.phoneNumber || current.phoneNumber;
         const checkName = data.userName || current.userName;
 
-        const bookingsRef = collection(db, 'bookings');
-        const snapshot = await getDocs(query(bookingsRef));
-        const otherBookings = snapshot.docs
-          .map(doc => ({ id: doc.id, ...doc.data() } as Booking))
-          .filter(b => b.id !== id && b.status !== 'cancelled');
+        const { useWorkspaceStore } = await import('../store');
+        const storeBookings = useWorkspaceStore.getState().bookings;
+        let allBookings: Booking[] = storeBookings;
+        if (!allBookings || allBookings.length === 0) {
+          const bookingsRef = collection(db, 'bookings');
+          const snapshot = await getDocs(query(bookingsRef));
+          allBookings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Booking));
+        }
+        const otherBookings = allBookings.filter(b => b.id !== id && b.status !== 'cancelled');
 
         // Check room overlap against bookings and active sessions
         const conflict = await checkRoomConflictInFirestore(checkRoomId, checkStartTime, checkEndTime, {

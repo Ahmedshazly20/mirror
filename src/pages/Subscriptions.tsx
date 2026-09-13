@@ -37,7 +37,8 @@ import { Badge } from '@/components/ui/badge';
 import { useWorkspaceStore } from '../store';
 import { subscriptionService } from '../services/subscriptionService';
 import { customerService } from '../services/customerService';
-import { Customer } from '../types';
+import { paymentService } from '../services/paymentService';
+import { Customer, Subscription } from '../types';
 import { toast } from 'sonner';
 import { format, addDays, isAfter, differenceInDays, differenceInCalendarDays } from 'date-fns';
 import { arSA, enUS } from 'date-fns/locale';
@@ -45,6 +46,20 @@ import { Progress } from '../components/ui/progress';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle, 
+  DialogFooter 
+} from '@/components/ui/dialog';
+import { 
+  formatCurrency, 
+  formatPackageBalance, 
+  getSubscriptionRemainingMinutes, 
+  getSubscriptionTotalMinutes 
+} from '../lib/utils-workspace';
+import { Banknote, AlertCircle, Wallet, DollarSign } from 'lucide-react';
 
 export default function Subscriptions() {
   const { t, i18n } = useTranslation();
@@ -79,6 +94,14 @@ export default function Subscriptions() {
     packageId: ''
   });
   const [phoneError, setPhoneError] = useState(false);
+  const [paidAmountInput, setPaidAmountInput] = useState<string>('');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'instapay'>('cash');
+
+  // Paying due on existing sub modal
+  const [payingSub, setPayingSub] = useState<Subscription | null>(null);
+  const [collectAmount, setCollectAmount] = useState('');
+  const [collectMethod, setCollectMethod] = useState<'cash' | 'instapay'>('cash');
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   // Close customer search dropdown on click outside
   useEffect(() => {
@@ -246,7 +269,14 @@ export default function Subscriptions() {
         console.warn('Customer auto-link warning in sub creation:', err);
       }
 
-      await subscriptionService.createSubscription({
+      const totalMinutes = totalHours ? Math.round(totalHours * 60) : undefined;
+      const remainingMinutes = remainingHours ? Math.round(remainingHours * 60) : undefined;
+      
+      const paid = paidAmountInput !== '' ? Math.min(price, Math.max(0, Number(paidAmountInput) || 0)) : price;
+      const remainingAmount = Math.max(0, price - paid);
+      const paymentStatus = remainingAmount === 0 ? 'paid' : (paid > 0 ? 'partially_paid' : 'unpaid');
+
+      const createdId = await subscriptionService.createSubscription({
         userName: newSub.userName.trim(),
         phoneNumber: newSub.phoneNumber.trim(),
         customerId: linkedCustomerId || undefined,
@@ -255,17 +285,52 @@ export default function Subscriptions() {
         validityDays: durationDays,
         isActive: true,
         price,
+        paidAmount: paid,
+        remainingAmount,
+        paymentStatus,
+        paymentMethod,
         type: newSub.type,
         packageId: newSub.packageId || null,
         totalHours: totalHours || null,
         remainingHours: remainingHours || null,
+        totalMinutes: totalMinutes || null,
+        remainingMinutes: remainingMinutes || null,
+        usedMinutes: 0,
         roomId: targetRoomId,
         roomName: targetRoomName
       });
 
+      // If paid amount > 0, log in payments collection for revenue tracking
+      if (paid > 0 && createdId) {
+        await paymentService.addPayment({
+          subscriptionId: createdId,
+          customerId: linkedCustomerId || undefined,
+          amount: paid,
+          paymentMethod,
+          notes: `اشتراك / باقة جديدة (${newSub.userName.trim()})`,
+          date: Date.now()
+        });
+      }
+
+      // Update customer ledger
+      if (linkedCustomerId) {
+        try {
+          const cust = await customerService.getCustomerById(linkedCustomerId);
+          if (cust) {
+            await customerService.updateCustomer(linkedCustomerId, {
+              totalSpent: (cust.totalSpent || 0) + paid,
+              outstandingBalance: (cust.outstandingBalance || 0) + remainingAmount
+            });
+          }
+        } catch (err) {
+          console.warn('Customer ledger update error in sub creation:', err);
+        }
+      }
+
       toast.success(t('subs.success'));
       setIsAdding(false);
       setSelectedCustomer(null);
+      setPaidAmountInput('');
       setNewSub({ 
         userName: '', 
         phoneNumber: '', 
@@ -278,6 +343,35 @@ export default function Subscriptions() {
       setPhoneError(false);
     } catch (err) {
       toast.error(t('subs.error'));
+    }
+  };
+
+  const handleRecordDuePayment = async () => {
+    if (!payingSub) return;
+    const amount = Number(collectAmount);
+    const remainingDue = payingSub.remainingAmount !== undefined ? payingSub.remainingAmount : (payingSub.price - (payingSub.paidAmount || 0));
+    
+    if (isNaN(amount) || amount <= 0) {
+      toast.error(isRTL ? 'يرجى إدخال مبلغ صحيح' : 'Please enter a valid amount');
+      return;
+    }
+
+    if (amount > remainingDue) {
+      toast.error(isRTL ? `المبلغ لا يمكن أن يتجاوز المتبقي (${remainingDue} ج.م)` : `Amount cannot exceed due (${remainingDue} EGP)`);
+      return;
+    }
+
+    try {
+      setIsProcessingPayment(true);
+      await subscriptionService.recordPayment(payingSub.id, amount, collectMethod);
+      toast.success(isRTL ? 'تم تسجيل السداد بنجاح' : 'Payment recorded successfully');
+      setPayingSub(null);
+      setCollectAmount('');
+    } catch (err) {
+      console.error('Error recording payment:', err);
+      toast.error(isRTL ? 'حدث خطأ أثناء تسجيل السداد' : 'Failed to record payment');
+    } finally {
+      setIsProcessingPayment(false);
     }
   };
 
@@ -831,6 +925,127 @@ export default function Subscriptions() {
                     </div>
                   </div>
 
+                  {/* Step 6: Payment & Settlement */}
+                  <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
+                    <h3 className="text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-emerald-500/10 text-emerald-500 flex items-center justify-center text-[10px] font-bold">
+                        {newSub.type === 'package' ? '6' : '5'}
+                      </span>
+                      {isRTL ? 'بيانات التحصيل والدفع (Revenue Settlement)' : 'Payment & Revenue Settlement'}
+                    </h3>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Payment Method Selector */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                          {isRTL ? 'طريقة الدفع' : 'Payment Method'}
+                        </Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPaymentMethod('cash')}
+                            className={cn(
+                              "flex items-center justify-center gap-2 h-11 px-3 rounded-xl border text-xs font-bold transition-all",
+                              paymentMethod === 'cash'
+                                ? "bg-emerald-500 text-white border-emerald-500 shadow-sm"
+                                : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+                            )}
+                          >
+                            <Banknote className="w-4 h-4" />
+                            <span>{isRTL ? 'كاش (Cash)' : 'Cash'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPaymentMethod('instapay')}
+                            className={cn(
+                              "flex items-center justify-center gap-2 h-11 px-3 rounded-xl border text-xs font-bold transition-all",
+                              paymentMethod === 'instapay'
+                                ? "bg-purple-600 text-white border-purple-600 shadow-sm"
+                                : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+                            )}
+                          >
+                            <Wallet className="w-4 h-4" />
+                            <span>InstaPay</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Paid Amount Input */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                            {isRTL ? 'المبلغ المسدد الآن (ج.م)' : 'Paid Amount (EGP)'}
+                          </Label>
+                          <span className="text-[11px] font-mono text-slate-400">
+                            {isRTL ? 'الإجمالي: ' : 'Total: '}{computedPrice} {t('common.currency')}
+                          </span>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            min="0"
+                            max={computedPrice}
+                            placeholder={`${computedPrice}`}
+                            value={paidAmountInput}
+                            onChange={(e) => setPaidAmountInput(e.target.value)}
+                            className="h-11 rounded-xl font-bold font-mono text-emerald-600 dark:text-emerald-400 bg-slate-50/50 dark:bg-slate-950 border-slate-200 dark:border-slate-800"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Payment Presets */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setPaidAmountInput(`${computedPrice}`)}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold border border-emerald-500/20 transition-all"
+                      >
+                        {isRTL ? `سداد كامل (${computedPrice} ج.م)` : `Full (${computedPrice} EGP)`}
+                      </button>
+                      {computedPrice > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setPaidAmountInput(`${Math.round(computedPrice / 2)}`)}
+                          className="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 font-bold border border-cyan-500/20 transition-all"
+                        >
+                          {isRTL ? `سداد النصف (${Math.round(computedPrice / 2)} ج.م)` : `Half (${Math.round(computedPrice / 2)} EGP)`}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setPaidAmountInput('0')}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold border border-rose-500/20 transition-all"
+                      >
+                        {isRTL ? 'بدون دفع (0 ج.م - آجل)' : 'Unpaid (0 EGP)'}
+                      </button>
+                    </div>
+
+                    {/* Settlement Summary Banner */}
+                    {(() => {
+                      const actualPaid = paidAmountInput !== '' ? Math.min(computedPrice, Math.max(0, Number(paidAmountInput) || 0)) : computedPrice;
+                      const actualRemaining = Math.max(0, computedPrice - actualPaid);
+                      return (
+                        <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl grid grid-cols-3 gap-2 text-center text-xs">
+                          <div>
+                            <p className="text-slate-400 text-[10px] font-bold">{isRTL ? 'المطلوب' : 'Total'}</p>
+                            <p className="font-bold text-slate-800 dark:text-white font-mono">{computedPrice} ج.م</p>
+                          </div>
+                          <div>
+                            <p className="text-emerald-500 text-[10px] font-bold">{isRTL ? 'إيراد محصل (Cash In)' : 'Revenue Received'}</p>
+                            <p className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">{actualPaid} ج.م</p>
+                          </div>
+                          <div>
+                            <p className="text-amber-500 text-[10px] font-bold">{isRTL ? 'متبقي مستحق (Due)' : 'Outstanding'}</p>
+                            <p className={cn("font-bold font-mono", actualRemaining > 0 ? "text-amber-500" : "text-slate-400")}>
+                              {actualRemaining} ج.م
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
                   <div className="flex justify-end pt-4 border-t border-slate-200 dark:border-slate-800">
                     <Button 
                       type="submit" 
@@ -1113,13 +1328,20 @@ export default function Subscriptions() {
                     </Badge>
                   </div>
                   
-                  {sub.type === 'package' && sub.totalHours !== undefined && sub.remainingHours !== undefined && (
+                  {sub.type === 'package' && (
                     <div className="space-y-2 pt-1">
                       <div className="flex justify-between text-[11px] font-bold">
                         <span className="text-slate-500 dark:text-slate-400">{t('subs.remainingHours')}</span>
-                        <span className="text-purple-600 dark:text-purple-400 font-extrabold">{sub.remainingHours} / {sub.totalHours} {t('common.hours')}</span>
+                        <span className="text-purple-600 dark:text-purple-400 font-extrabold">
+                          {formatPackageBalance(getSubscriptionRemainingMinutes(sub))} / {formatPackageBalance(getSubscriptionTotalMinutes(sub))}
+                        </span>
                       </div>
-                      <Progress value={sub.totalHours > 0 ? (sub.remainingHours / sub.totalHours) * 100 : 0} className="h-1.5 bg-slate-100 dark:bg-slate-800" />
+                      {(() => {
+                        const remM = getSubscriptionRemainingMinutes(sub);
+                        const totM = getSubscriptionTotalMinutes(sub);
+                        const pct = totM > 0 ? (remM / totM) * 100 : 0;
+                        return <Progress value={pct} className="h-1.5 bg-slate-100 dark:bg-slate-800" />;
+                      })()}
                     </div>
                   )}
 
@@ -1139,12 +1361,63 @@ export default function Subscriptions() {
                     </div>
                   )}
                   
-                  <div className="flex items-center justify-between text-xs font-bold pt-0.5">
-                    <span className="text-slate-500 dark:text-slate-400">{t('subs.pricePaid')}</span>
-                    <span className="text-cyan-600 dark:text-cyan-400 font-black">
-                      {sub.price} {t('common.currency')}
-                    </span>
-                  </div>
+                  {/* Financial Settlement & Revenue Breakdown */}
+                  {(() => {
+                    const price = sub.price || 0;
+                    const paid = sub.paidAmount !== undefined ? sub.paidAmount : (sub.paymentStatus === 'unpaid' ? 0 : price);
+                    const remaining = sub.remainingAmount !== undefined ? sub.remainingAmount : Math.max(0, price - paid);
+                    const isFullyPaid = remaining === 0;
+
+                    return (
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'سعر الاشتراك' : 'Subscription Price'}</span>
+                          <span className="text-slate-800 dark:text-slate-200 font-black font-mono">
+                            {price} {t('common.currency')}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] font-bold">
+                          <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" />
+                            {isRTL ? 'المسدد (Revenue Received)' : 'Paid'}
+                          </span>
+                          <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">
+                            {paid} {t('common.currency')}
+                          </span>
+                        </div>
+
+                        {!isFullyPaid ? (
+                          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-2">
+                            <div>
+                              <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400">{isRTL ? 'متبقي مستحق (Due)' : 'Outstanding Due'}</p>
+                              <p className="text-xs font-black font-mono text-amber-700 dark:text-amber-300">{remaining} {t('common.currency')}</p>
+                            </div>
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setPayingSub(sub);
+                                setCollectAmount(`${remaining}`);
+                                setCollectMethod('cash');
+                              }}
+                              className="h-7 px-2.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg shadow-sm"
+                            >
+                              <DollarSign className="w-3 h-3 mr-0.5" />
+                              {isRTL ? 'تحصيل' : 'Collect'}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/5 px-2.5 py-1 rounded-lg border border-emerald-500/10">
+                            <span>{isRTL ? 'الحالة المالية' : 'Payment Status'}</span>
+                            <span className="flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              {isRTL ? 'مسدد بالكامل' : 'Fully Paid'}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </CardContent>
             </Card>
@@ -1158,6 +1431,120 @@ export default function Subscriptions() {
           </div>
         )}
       </div>
+
+      {/* Collect Due Payment Dialog */}
+      <Dialog open={!!payingSub} onOpenChange={(open) => !open && setPayingSub(null)}>
+        <DialogContent className="max-w-md bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
+                <DollarSign className="w-5 h-5" />
+              </div>
+              <span>{isRTL ? 'تحصيل دفعة من اشتراك / باقة' : 'Collect Subscription Payment'}</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          {payingSub && (
+            <div className="space-y-4 pt-2">
+              <div className="p-3.5 bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-2xl space-y-1.5 text-xs">
+                <div className="flex justify-between font-bold">
+                  <span className="text-slate-500">{isRTL ? 'العميل:' : 'Customer:'}</span>
+                  <span className="text-slate-900 dark:text-white font-black">{payingSub.userName}</span>
+                </div>
+                <div className="flex justify-between font-bold">
+                  <span className="text-slate-500">{isRTL ? 'إجمالي السعر:' : 'Total Price:'}</span>
+                  <span className="font-mono text-slate-900 dark:text-white">{payingSub.price} ج.م</span>
+                </div>
+                <div className="flex justify-between font-bold">
+                  <span className="text-slate-500">{isRTL ? 'المسدد سابقاً:' : 'Already Paid:'}</span>
+                  <span className="font-mono text-emerald-600 dark:text-emerald-400">{payingSub.paidAmount || 0} ج.م</span>
+                </div>
+                <div className="flex justify-between font-bold text-amber-600 dark:text-amber-400 border-t border-slate-200 dark:border-slate-800 pt-1.5">
+                  <span>{isRTL ? 'المتبقي المستحق:' : 'Outstanding Due:'}</span>
+                  <span className="font-mono font-black">
+                    {payingSub.remainingAmount !== undefined ? payingSub.remainingAmount : (payingSub.price - (payingSub.paidAmount || 0))} ج.م
+                  </span>
+                </div>
+              </div>
+
+              {/* Payment Method */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isRTL ? 'طريقة التحصيل' : 'Payment Method'}
+                </Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCollectMethod('cash')}
+                    className={cn(
+                      "flex items-center justify-center gap-2 h-10 px-3 rounded-xl border text-xs font-bold transition-all",
+                      collectMethod === 'cash'
+                        ? "bg-emerald-500 text-white border-emerald-500 shadow-sm"
+                        : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+                    )}
+                  >
+                    <Banknote className="w-4 h-4" />
+                    <span>{isRTL ? 'كاش (Cash)' : 'Cash'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCollectMethod('instapay')}
+                    className={cn(
+                      "flex items-center justify-center gap-2 h-10 px-3 rounded-xl border text-xs font-bold transition-all",
+                      collectMethod === 'instapay'
+                        ? "bg-purple-600 text-white border-purple-600 shadow-sm"
+                        : "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+                    )}
+                  >
+                    <Wallet className="w-4 h-4" />
+                    <span>InstaPay</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Amount to Pay */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isRTL ? 'المبلغ المراد تحصيله الآن (ج.م)' : 'Amount to Collect Now (EGP)'}
+                </Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max={payingSub.remainingAmount !== undefined ? payingSub.remainingAmount : (payingSub.price - (payingSub.paidAmount || 0))}
+                  value={collectAmount}
+                  onChange={(e) => setCollectAmount(e.target.value)}
+                  className="h-11 rounded-xl font-bold font-mono text-emerald-600 dark:text-emerald-400 text-base"
+                />
+              </div>
+
+              <DialogFooter className="pt-2 gap-2 flex-row justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setPayingSub(null)}
+                  disabled={isProcessingPayment}
+                  className="rounded-xl font-bold text-xs h-10"
+                >
+                  {isRTL ? 'إلغاء' : 'Cancel'}
+                </Button>
+                <Button
+                  onClick={handleRecordDuePayment}
+                  disabled={isProcessingPayment}
+                  className="rounded-xl font-bold text-xs h-10 bg-emerald-600 hover:bg-emerald-700 text-white shadow-md"
+                >
+                  {isProcessingPayment ? (
+                    <span className="flex items-center gap-2">
+                      <Timer className="w-4 h-4 animate-spin" />
+                      {isRTL ? 'جاري التسجيل...' : 'Processing...'}
+                    </span>
+                  ) : (
+                    <span>{isRTL ? 'تأكيد تسجيل السداد' : 'Confirm Payment'}</span>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

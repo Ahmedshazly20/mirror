@@ -18,32 +18,102 @@ import { formatCurrency, toMillis } from '../lib/utils-workspace';
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const { sessions: activeSessions, completedSessions, setIsNewSessionModalOpen } = useWorkspaceStore();
+  const { 
+    sessions: activeSessions, 
+    completedSessions, 
+    subscriptions, 
+    bookings, 
+    payments, 
+    setIsNewSessionModalOpen 
+  } = useWorkspaceStore();
   
   const isRTL = i18n.language.startsWith('ar');
 
   const { todayRevenue, todayCash, todayInstapay, todayCompletedCount } = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayTimestamp = today.getTime();
+    const todayStartMs = today.getTime();
+    const todayEndMs = todayStartMs + 24 * 60 * 60 * 1000 - 1;
 
-    let rev = 0;
+    // Filter payments recorded today (Single Source of Truth)
+    const todayPayments = (payments || []).filter(p => {
+      const pTime = toMillis(p.date || p.createdAt);
+      return pTime >= todayStartMs && pTime <= todayEndMs;
+    });
+
+    const coveredSessionIds = new Set<string>();
+    const coveredSubscriptionIds = new Set<string>();
+    const coveredBookingIds = new Set<string>();
+
     let cash = 0;
     let insta = 0;
-    let count = 0;
 
-    for (let i = 0; i < completedSessions.length; i++) {
-      const s = completedSessions[i];
-      if (toMillis(s.startTime) >= todayTimestamp) {
+    // 1. Process all direct payments collected today
+    todayPayments.forEach(p => {
+      const amt = p.amount || 0;
+      if (amt <= 0) return;
+
+      if (p.paymentMethod === 'instapay') {
+        insta += amt;
+      } else {
+        cash += amt;
+      }
+
+      if (p.sessionId) coveredSessionIds.add(p.sessionId);
+      if (p.subscriptionId) coveredSubscriptionIds.add(p.subscriptionId);
+      if (p.bookingId) coveredBookingIds.add(p.bookingId);
+    });
+
+    // 2. Count completed sessions today
+    let count = 0;
+    completedSessions.forEach(s => {
+      const sTime = toMillis(s.endTime || s.startTime);
+      if (sTime >= todayStartMs && sTime <= todayEndMs) {
         count++;
-        rev += (s.totalCost || 0);
-        if (!s.paymentMethod || s.paymentMethod === 'cash') {
-          cash += (s.totalCost || 0);
-        } else if (s.paymentMethod === 'instapay') {
-          insta += (s.totalCost || 0);
+        // Reconcile legacy sessions if not in payments collection
+        const paid = s.paidAmount !== undefined ? s.paidAmount : (s.paymentStatus === 'unpaid' ? 0 : (s.totalCost || 0));
+        if (paid > 0 && !coveredSessionIds.has(s.id)) {
+          if (s.paymentMethod === 'instapay') {
+            insta += paid;
+          } else {
+            cash += paid;
+          }
         }
       }
-    }
+    });
+
+    // 3. Reconcile legacy subscriptions started today not in payments
+    (subscriptions || []).forEach(sub => {
+      const subTime = toMillis(sub.startDate || sub.createdAt);
+      if (subTime >= todayStartMs && subTime <= todayEndMs) {
+        const paid = sub.paidAmount !== undefined ? sub.paidAmount : (sub.paymentStatus === 'unpaid' ? 0 : (sub.price || 0));
+        if (paid > 0 && !coveredSubscriptionIds.has(sub.id)) {
+          if (sub.paymentMethod === 'instapay') {
+            insta += paid;
+          } else {
+            cash += paid;
+          }
+        }
+      }
+    });
+
+    // 4. Reconcile legacy bookings made today not in payments
+    (bookings || []).forEach(b => {
+      if (b.activeSessionId && coveredSessionIds.has(b.activeSessionId)) return;
+      const bTime = toMillis(b.createdAt || b.startTime);
+      if (bTime >= todayStartMs && bTime <= todayEndMs) {
+        const paid = b.paidAmount || 0;
+        if (paid > 0 && !coveredBookingIds.has(b.id)) {
+          if (b.paymentMethod === 'instapay') {
+            insta += paid;
+          } else {
+            cash += paid;
+          }
+        }
+      }
+    });
+
+    const rev = cash + insta;
 
     return {
       todayRevenue: rev,
@@ -51,7 +121,7 @@ export default function Dashboard() {
       todayInstapay: insta,
       todayCompletedCount: count,
     };
-  }, [completedSessions]);
+  }, [completedSessions, payments, subscriptions, bookings]);
 
   const allRecentSessions = useMemo(() => {
     return [...activeSessions, ...completedSessions]

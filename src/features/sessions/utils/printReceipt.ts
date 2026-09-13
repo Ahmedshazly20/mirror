@@ -1,4 +1,4 @@
-import { formatDuration } from '../../../lib/utils-workspace';
+import { formatDuration, formatPackageBalance } from '../../../lib/utils-workspace';
 
 export interface ThermalReceiptData {
   userName: string;
@@ -19,7 +19,9 @@ export interface ThermalReceiptData {
   isSubscribed?: boolean;
   notes?: string;
   remainingHours?: number;
+  remainingMinutes?: number;
   deductedHours?: number;
+  deductedMinutes?: number;
   paymentMethod?: 'cash' | 'instapay';
   timeDiscount?: number;
   paidAmount?: number;
@@ -106,8 +108,8 @@ export function printThermalReceipt(data: ThermalReceiptData) {
       `}
       ${data.timeDiscount ? `<div class="row" style="color:red"><span>خصم الوقت الإضافي</span><span>-${data.timeDiscount.toFixed(2)} ج.م</span></div>` : ''}
 
-      ${data.deductedHours ? `<div class="row"><span>ساعات مخصومة</span><span>${data.deductedHours} ساعة</span></div>` : ''}
-      ${data.remainingHours !== undefined ? `<div class="row"><span>ساعات متبقية</span><span>${data.remainingHours} ساعة</span></div>` : ''}
+      ${(data.deductedMinutes || data.deductedHours) ? `<div class="row"><span>وقت باقة مخصوم</span><span>${formatPackageBalance(data.deductedMinutes ?? (data.deductedHours ? data.deductedHours * 60 : 0))}</span></div>` : ''}
+      ${(data.remainingMinutes !== undefined || data.remainingHours !== undefined) ? `<div class="row"><span>رصيد باقة متبقي</span><span>${formatPackageBalance(data.remainingMinutes ?? (data.remainingHours ? data.remainingHours * 60 : 0))}</span></div>` : ''}
 
       ${data.services && data.services.length > 0 ? `
         <div class="section-title">▸ الطلبات والخدمات الإضافية</div>
@@ -257,7 +259,8 @@ export function handleReprint(session: any) {
       ` : `
         <div class="row"><span>تكلفة الوقت</span><span>${(session.timeCost || 0).toFixed(2)} ج.م</span></div>
       `}
-      ${session.deductedHours ? `<div class="row"><span>ساعات مخصومة</span><span>${session.deductedHours} ساعة</span></div>` : ''}
+      ${(session.deductedMinutes || session.deductedHours) ? `<div class="row"><span>وقت باقة مخصوم</span><span>${formatPackageBalance(session.deductedMinutes ?? (session.deductedHours ? session.deductedHours * 60 : 0))}</span></div>` : ''}
+      ${(session.remainingMinutes !== undefined || session.remainingHours !== undefined) ? `<div class="row"><span>رصيد باقة متبقي</span><span>${formatPackageBalance(session.remainingMinutes ?? (session.remainingHours ? session.remainingHours * 60 : 0))}</span></div>` : ''}
       ${session.services?.length > 0 ? `
         <div class="section-title">▸ الطلبات والخدمات</div>
         ${session.services.map((s: any) => `

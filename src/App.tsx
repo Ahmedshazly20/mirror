@@ -17,6 +17,7 @@ import { visitService } from './services/visitService';
 import { paymentService } from './services/paymentService';
 import { roomService } from './services/roomService';
 import { useAutoStartBookings } from './hooks/useAutoStartBookings';
+import { useExpenses } from './hooks/useExpenses';
 import './i18n/config';
 
 // Static ES6 imports to bypass file:// protocol lazy-loading microtask lag in Electron
@@ -42,6 +43,7 @@ const LoadingScreen = () => (
 export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   useAutoStartBookings();
+  useExpenses();
 
   const {
     user, setUser,

@@ -339,12 +339,17 @@ export const sessionService = {
         }
       }
 
-      if (finalData.subscriptionId && finalData.deductedHours) {
+      if (finalData.subscriptionId && (finalData.deductedMinutes !== undefined || finalData.deductedHours !== undefined)) {
         const { subscriptionService } = await import('./subscriptionService');
-        await subscriptionService.deductHours(
-          finalData.subscriptionId,
-          finalData.deductedHours,
-        );
+        const minsToDeduct = finalData.deductedMinutes !== undefined 
+          ? finalData.deductedMinutes 
+          : Math.round((finalData.deductedHours || 0) * 60);
+        if (minsToDeduct > 0) {
+          await subscriptionService.deductMinutes(
+            finalData.subscriptionId,
+            minsToDeduct,
+          );
+        }
       }
 
       // Deduct inventory stock for services sold in session

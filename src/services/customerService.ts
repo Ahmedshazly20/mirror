@@ -28,6 +28,20 @@ export const customerService = {
     }
   },
 
+  async getCustomerById(id: string): Promise<Customer | null> {
+    try {
+      const docRef = doc(db, 'customers', id);
+      const snapshot = await getDocs(query(collection(db, 'customers'), where('__name__', '==', id)));
+      if (!snapshot.empty) {
+        return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Customer;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching customer by id:', error);
+      return null;
+    }
+  },
+
   async getNextCustomerId(): Promise<number> {
     try {
       const snapshot = await getDocs(collection(db, 'customers'));

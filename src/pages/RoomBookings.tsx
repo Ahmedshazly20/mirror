@@ -17,7 +17,8 @@ import {
   Banknote,
   Percent,
   Check,
-  CreditCard
+  CreditCard,
+  Zap
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
@@ -109,6 +110,7 @@ export default function RoomBookings() {
   const [userName, setUserName] = useState<string>('');
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [paidAmount, setPaidAmount] = useState<string>('');
+  const [bookingPaymentMethod, setBookingPaymentMethod] = useState<'cash' | 'instapay'>('cash');
   const [phoneError, setPhoneError] = useState<boolean>(false);
   const [customerSearchTerm, setCustomerSearchTerm] = useState<string>('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState<boolean>(false);
@@ -336,6 +338,7 @@ export default function RoomBookings() {
         endTime: selectedTimes.end,
         totalPrice: calculatedTotalPrice,
         paidAmount: paid,
+        paymentMethod: paid > 0 ? bookingPaymentMethod : 'cash',
         remainingAmount: Math.max(0, calculatedTotalPrice - paid),
         paymentStatus: paid >= calculatedTotalPrice ? 'paid' : (paid > 0 ? 'partially_paid' : 'unpaid')
       });
@@ -350,6 +353,7 @@ export default function RoomBookings() {
       setSelectedCustomer(null);
       setCustomerSearchTerm('');
       setPaidAmount('');
+      setBookingPaymentMethod('cash');
       setPhoneError(false);
     } catch (err: any) {
       console.error(err);
@@ -916,6 +920,46 @@ export default function RoomBookings() {
                                 )}
                               >
                                 {isRTL ? 'الكل' : '100%'} ({calculatedTotalPrice})
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Payment Method Selector for Deposit */}
+                        {parseFloat(paidAmount) > 0 && (
+                          <div className="space-y-1.5 pt-1">
+                            <Label className="text-xs font-bold text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                              <span>{isRTL ? 'طريقة تحصيل العربون:' : 'Deposit Payment Method:'}</span>
+                              <span className="text-[10px] text-cyan-500 font-bold">
+                                {bookingPaymentMethod === 'instapay' ? 'InstaPay ⚡' : 'Cash 💵'}
+                              </span>
+                            </Label>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setBookingPaymentMethod('cash')}
+                                className={cn(
+                                  "flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-black transition-all",
+                                  bookingPaymentMethod === 'cash'
+                                    ? "bg-emerald-500 text-white border-emerald-500 shadow-md shadow-emerald-500/20"
+                                    : "bg-slate-50 dark:bg-slate-850 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                )}
+                              >
+                                <Banknote className="w-4 h-4" />
+                                <span>{isRTL ? 'نقدي (Cash)' : 'Cash'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setBookingPaymentMethod('instapay')}
+                                className={cn(
+                                  "flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-black transition-all",
+                                  bookingPaymentMethod === 'instapay'
+                                    ? "bg-violet-600 text-white border-violet-600 shadow-md shadow-violet-600/20"
+                                    : "bg-slate-50 dark:bg-slate-850 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                )}
+                              >
+                                <Zap className="w-4 h-4" />
+                                <span>{isRTL ? 'إنستاباي (InstaPay)' : 'InstaPay'}</span>
                               </button>
                             </div>
                           </div>

@@ -156,10 +156,10 @@ export const pricingService = {
       return this.calculateRoomPrice(roomOrType, hours, customTable);
     }
 
-    // mode === 'open' or fallback: Hourly Rate × Actual Hours
+    // mode === 'open' or fallback: Hourly Rate × Actual Duration (Minutes)
     const firstHourPrice = roomPrices?.[1] ?? 30;
-    const actualHours = elapsedMinutes / 60;
-    return Math.round(actualHours * firstHourPrice);
+    const exactCost = (elapsedMinutes / 60) * firstHourPrice;
+    return Math.round(exactCost * 100) / 100;
   },
 
   /**

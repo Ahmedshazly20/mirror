@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { useWorkspaceStore } from '../../../store';
-import { formatCurrency, formatDuration } from '../../../lib/utils-workspace';
+import { formatCurrency, formatDuration, formatPackageBalance, getSubscriptionRemainingMinutes } from '../../../lib/utils-workspace';
 import { printThermalReceipt } from '../utils/printReceipt';
 import { sessionService } from '../../../services/sessionService';
 import { paymentService } from '../../../services/paymentService';
@@ -122,7 +122,8 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
 
   const sub = session.subscriptionId ? subscriptions.find(s => s.id === session.subscriptionId) : null;
   const isPackage = sub?.type === 'package';
-  const hoursToDeduct = Math.ceil(duration / 60);
+  const durationMinutes = Math.round(duration);
+  const remainingMinutesBefore = getSubscriptionRemainingMinutes(sub);
 
   const handleConfirmEndSession = async () => {
     if (discountPercentage > maxAllowedDiscount) {
@@ -132,19 +133,20 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
       return;
     }
 
+    let deductedMinutes = 0;
     let deductedHours = 0;
-    let newRemaining = 0;
+    let newRemainingMins = 0;
 
     if (session.subscriptionId && sub?.type === 'package') {
-      deductedHours = Math.ceil(duration / 60);
-      if (sub.remainingHours !== undefined) {
-        if (sub.remainingHours < deductedHours) {
-          toast.warning(t('packages.insufficientHours'), {
-            description: t('packages.needed') + `: ${deductedHours}, ` + t('packages.available') + `: ${sub.remainingHours}`
-          });
-        }
-        newRemaining = Math.max(0, sub.remainingHours - deductedHours);
+      deductedMinutes = Math.round(duration);
+      deductedHours = Number((deductedMinutes / 60).toFixed(2));
+      const remMins = getSubscriptionRemainingMinutes(sub);
+      if (remMins < deductedMinutes) {
+        toast.warning(t('packages.insufficientHours') || 'رصيد الباقة أقل من وقت الجلسة', {
+          description: `${t('packages.needed') || 'المطلوب'}: ${formatPackageBalance(deductedMinutes)}, ${t('packages.available') || 'المتاح'}: ${formatPackageBalance(remMins)}`
+        });
       }
+      newRemainingMins = Math.max(0, remMins - deductedMinutes);
     }
 
     try {
@@ -159,15 +161,36 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
         paidAmount: totalPaid,
         remainingAmount: remainingBalance,
         paymentStatus,
-        duration,
+        duration: durationMinutes,
         pricingType: (isBookingSession ? 'booking' : type) as any,
         notes: session.notes || '',
         bookingId: session.bookingId || undefined,
         subscriptionId: session.subscriptionId || undefined,
+        deductedMinutes: deductedMinutes || undefined,
         deductedHours: deductedHours || undefined,
+        remainingMinutes: isPackage ? newRemainingMins : undefined,
         paymentMethod,
         timeDiscount: discountAmount
       });
+
+      // Update customer spent and outstanding balance if linked
+      if (session.customerId) {
+        try {
+          const { customerService } = await import('../../../services/customerService');
+          const cust = await customerService.getCustomerById(session.customerId);
+          if (cust) {
+            const addedSpent = isBookingSession ? amountCollectedNow : totalPaid;
+            const currentOutstanding = cust.outstandingBalance || 0;
+            const newOutstanding = Math.max(0, currentOutstanding + remainingBalance);
+            await customerService.updateCustomer(session.customerId, {
+              totalSpent: (cust.totalSpent || 0) + addedSpent,
+              outstandingBalance: newOutstanding
+            });
+          }
+        } catch (custErr) {
+          console.warn('Could not update customer spending summary:', custErr);
+        }
+      }
 
       // If user paid an amount now, record a payment in payments collection
       if (amountCollectedNow > 0) {
@@ -197,7 +220,7 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
         tableNumber: session.roomAssignment?.tableLabel,
         startTime: session.startTime,
         endTime: Date.now(),
-        duration,
+        duration: durationMinutes,
         timeCost: effectiveTimeCost,
         servicesCost,
         serviceDiscountTotal,
@@ -210,7 +233,9 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
         services: session.services || [],
         isSubscribed: session.isSubscribed,
         notes: session.notes || '',
-        remainingHours: sub?.type === 'package' ? newRemaining : undefined,
+        remainingMinutes: isPackage ? newRemainingMins : undefined,
+        remainingHours: isPackage ? Number((newRemainingMins / 60).toFixed(2)) : undefined,
+        deductedMinutes: deductedMinutes || undefined,
         deductedHours: deductedHours || undefined,
         paymentMethod,
         timeDiscount: discountAmount,
@@ -304,7 +329,7 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
                 </span>
               </div>
               <span className="font-bold text-slate-900 dark:text-white font-mono">
-                {isPackage ? `${hoursToDeduct} ${t('common.timeCost')}` : formatCurrency(effectiveTimeCost)}
+                {isPackage ? `${formatPackageBalance(durationMinutes)} (${isRTL ? 'خصم من الباقة' : 'Deducted from package'})` : formatCurrency(effectiveTimeCost)}
               </span>
             </div>
 

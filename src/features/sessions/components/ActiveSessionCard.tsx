@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { useWorkspaceStore } from '../../../store';
-import { formatCurrency, formatDuration, toMillis } from '../../../lib/utils-workspace';
+import { formatCurrency, formatDuration, formatPackageBalance, getSubscriptionRemainingMinutes, getSubscriptionTotalMinutes, toMillis } from '../../../lib/utils-workspace';
 import { sessionService } from '../../../services/sessionService';
 import { pricingService, DEFAULT_PRICING_TABLE } from '../../../services/pricingService';
 import { toast } from 'sonner';
@@ -73,8 +73,9 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
 
   const sub = session.subscriptionId ? subscriptions.find(s => s.id === session.subscriptionId) : null;
   const isPackage = sub?.type === 'package';
-  const neededHours = Math.ceil(minutes / 60);
-  const isInsufficient = isPackage && sub && sub.remainingHours !== undefined && sub.remainingHours < neededHours;
+  const subRemainingMinutes = getSubscriptionRemainingMinutes(sub);
+  const subTotalMinutes = getSubscriptionTotalMinutes(sub) || 1;
+  const isInsufficient = isPackage && sub && subRemainingMinutes < minutes;
 
   const activeRules = settings.pricingRules || DEFAULT_PRICING_TABLE;
   const activeRoom = (session.roomAssignment && rooms.find(r => r.id === session.roomAssignment?.roomId)) || 'shared_space';
@@ -282,20 +283,20 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
         )}
 
         {/* ── Package hours info ── */}
-        {isPackage && sub && sub.remainingHours !== undefined && (
+        {isPackage && sub && (
           <div className="px-4 py-3 bg-amber-500/5 border-b border-amber-500/10 space-y-2">
             <div className="flex justify-between items-center text-[11px]">
               <div className="flex items-center gap-1">
                 <Clock className="w-3 h-3 text-amber-500" />
-                <span className="text-slate-500">{t('subs.remainingHours')}</span>
+                <span className="text-slate-500">{t('subs.remainingHours') || 'الرصيد المتبقي'}</span>
               </div>
-              <span className={cn("font-bold", isInsufficient ? 'text-rose-500' : 'text-amber-600')}>
-                {sub.remainingHours} {t('common.hours')}
+              <span className={cn("font-bold font-mono", isInsufficient ? 'text-rose-500' : 'text-amber-600')}>
+                {formatPackageBalance(subRemainingMinutes)} / {formatPackageBalance(subTotalMinutes)}
               </span>
             </div>
-            <Progress value={Math.max(0, (sub.remainingHours / (sub.totalHours || 1)) * 100)} className="h-1.5 bg-slate-200 dark:bg-slate-800" />
+            <Progress value={Math.max(0, Math.min(100, (subRemainingMinutes / subTotalMinutes) * 100))} className="h-1.5 bg-slate-200 dark:bg-slate-800" />
             {isInsufficient && (
-              <p className="text-[10px] text-rose-500 font-bold text-center">⚠️ {t('packages.insufficientHours')}</p>
+              <p className="text-[10px] text-rose-500 font-bold text-center">⚠️ {t('packages.insufficientHours') || 'رصيد الباقة غير كافٍ للمدة الحالية'}</p>
             )}
           </div>
         )}

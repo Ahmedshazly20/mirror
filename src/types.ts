@@ -78,6 +78,8 @@ export interface Session {
   roomAssignment?: SessionRoomAssignment;
   subscriptionId?: string;
   deductedHours?: number;
+  deductedMinutes?: number;
+  remainingMinutes?: number;
   paymentMethod?: 'cash' | 'instapay';
   timeDiscount?: number;
   bookingId?: string;
@@ -127,6 +129,7 @@ export interface Booking {
   paidAmount?: number;
   remainingAmount?: number;
   paymentStatus?: 'paid' | 'partially_paid' | 'unpaid';
+  paymentMethod?: 'cash' | 'instapay' | 'card';
   status?: BookingStatus;
   notes?: string;
   createdAt: number;
@@ -165,12 +168,16 @@ export interface Subscription {
   paidAmount?: number;
   remainingAmount?: number;
   paymentStatus?: 'paid' | 'partially_paid' | 'unpaid';
+  paymentMethod?: 'cash' | 'instapay';
   createdAt: number;
   type: SubscriptionType;
   packageId?: string;
   totalHours?: number;
   remainingHours?: number;
   usedHours?: number;
+  totalMinutes?: number;
+  remainingMinutes?: number;
+  usedMinutes?: number;
   allowedDays?: string[]; // ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday']
   allowedSpaceTypes?: string[]; // ['shared_space', 'meeting_room', etc.] or room IDs
   roomId?: string;

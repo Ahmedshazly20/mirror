@@ -242,7 +242,7 @@
     "dailyPricing": "Daily cap: Maximum of {{cap}} EGP for the entire day.",
     "selectRoom": "Select Room",
     "optional": "Optional",
-    "noRoom": "No Room",
+    "noRoom": "Shared Space",
     "full": "Full",
     "selectTable": "Select Table",
     "table": "Table",
