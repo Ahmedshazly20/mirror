@@ -501,7 +501,6 @@ export const sessionService = {
     const q = query(
       collection(db, 'sessions'),
       where('status', '==', 'completed'),
-      limit(30),
     );
     return onSnapshot(
       q,
@@ -511,9 +510,9 @@ export const sessionService = {
           (d) => ({ id: d.id, ...d.data() } as Session),
         );
         completed.sort((a, b) => {
-          const aEnd = a.endTime ? toMillis(a.endTime) : 0;
-          const bEnd = b.endTime ? toMillis(b.endTime) : 0;
-          return bEnd - aEnd;
+          const aTime = toMillis(a.endTime || a.startTime || a.createdAt);
+          const bTime = toMillis(b.endTime || b.startTime || b.createdAt);
+          return bTime - aTime;
         });
         callback(completed);
       },

@@ -625,7 +625,7 @@ export default function Reports() {
 
       {/* Primary Financial KPIs Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Revenue Received (Cash In) */}
+        {/* Income (Cash In) */}
         <Card className="bg-white dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 shadow-sm rounded-3xl overflow-hidden group hover:border-emerald-500/40 transition-all">
           <CardContent className="p-5 relative">
             <div className="flex items-center justify-between mb-3">
@@ -633,10 +633,10 @@ export default function Reports() {
                 <DollarSign className="w-5 h-5" />
               </div>
               <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg">
-                {isRTL ? 'المحصل فعلياً' : 'Cash In'}
+                {isRTL ? 'المحصل فعلياً' : 'Income'}
               </span>
             </div>
-            <p className="text-xs font-bold text-slate-500 dark:text-slate-400">{isRTL ? 'إجمالي الإيرادات المحصلة' : 'Revenue Received'}</p>
+            <p className="text-xs font-bold text-slate-500 dark:text-slate-400">{isRTL ? 'الدخل المحصل' : 'Income'}</p>
             <h3 className="text-2xl font-black text-slate-900 dark:text-white mt-1 font-mono">
               {formatCurrency(analyticsData.kpis.totalRevenueReceived)}
             </h3>

@@ -9,10 +9,11 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Clock, MessageCircle, FileText, Printer, Trash2 } from 'lucide-react';
+import { Clock, MessageCircle, FileText, Printer, Trash2, Package, Crown, DoorOpen } from 'lucide-react';
 import { formatCurrency, formatDuration, toMillis } from '../../../lib/utils-workspace';
 import { handleReprint } from '../utils/printReceipt';
 import { Session } from '../../../types';
+import { useWorkspaceStore } from '../../../store';
 
 interface HistorySessionDetailModalProps {
   session: Session | null;
@@ -31,9 +32,16 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
   isOwner,
   onDelete
 }: HistorySessionDetailModalProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isRTL = i18n.language.startsWith('ar');
+  const { subscriptions, packages } = useWorkspaceStore();
 
   if (!session) return null;
+
+  const sub = session.subscriptionId ? subscriptions.find(s => s.id === session.subscriptionId) : null;
+  const pkg = sub?.packageId ? packages.find(p => p.id === sub.packageId) : null;
+  const isPackage = sub?.type === 'package' || !!session.deductedMinutes || !!session.deductedHours || ((session.pricingType as string) === 'package');
+  const isMonthly = sub?.type === 'monthly' || session.pricingType === 'subscription' || ((session.pricingType as string) === 'monthly') || (!isPackage && Boolean(session.isSubscribed));
 
   const handlePrint = () => {
     handleReprint(session);
@@ -52,24 +60,32 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
         
         <div className="space-y-6 py-4">
           <div className="flex items-center gap-5 p-5 rounded-[2rem] bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-500 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-cyan-500/20">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-cyan-500/20 shrink-0">
               {session.userName?.[0] || 'U'}
             </div>
-            <div>
-              <h3 className="text-xl font-black">{session.userName}</h3>
+            <div className="min-w-0">
+              <h3 className="text-xl font-black truncate">{session.userName}</h3>
               <div className="flex items-center gap-2 mt-0.5">
                 <p className="text-sm text-slate-500 font-medium font-mono">{session.phoneNumber || '---'}</p>
                 {session.whatsappOptIn !== false && (
-                  <MessageCircle className="w-4 h-4 text-emerald-500" />
+                  <MessageCircle className="w-4 h-4 text-emerald-500 shrink-0" />
                 )}
               </div>
               <p className="text-[10px] text-slate-400 font-medium mt-1">
                 {format(toMillis(session.startTime), 'MMMM do, yyyy', { locale: dateLocale })}
               </p>
             </div>
-            <Badge className="ml-auto bg-emerald-500 text-white border-0 py-1 px-3 rounded-xl font-bold">
-              {t('sessions.completed')}
-            </Badge>
+            <div className="ml-auto shrink-0 flex flex-col items-end gap-1">
+              <Badge className="bg-emerald-500 text-white border-0 py-1 px-3 rounded-xl font-bold text-xs">
+                {t('sessions.completed')}
+              </Badge>
+              {session.roomAssignment?.roomName && (
+                <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1">
+                  <DoorOpen className="w-3 h-3 text-cyan-500" />
+                  {session.roomAssignment.roomName}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-6 px-2">
@@ -88,13 +104,46 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
           </div>
 
           <div className="space-y-4 pt-6 border-t border-slate-200 dark:border-slate-800">
+            {/* Membership / Pricing Type */}
             <div className="flex justify-between items-center text-sm">
               <span className="text-slate-500 font-bold">{t('sessions.pricingType')}</span>
-              <Badge variant="secondary" className="font-black bg-slate-100 dark:bg-slate-800 uppercase text-[10px]">{session.pricingType}</Badge>
+              {isPackage ? (
+                <Badge className="bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 font-black text-xs px-2.5 py-0.5 flex items-center gap-1">
+                  <Package className="w-3.5 h-3.5" />
+                  <span>{pkg?.name || (isRTL ? 'باقة ساعات' : 'Hour Package')}</span>
+                </Badge>
+              ) : isMonthly ? (
+                <Badge className="bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 font-black text-xs px-2.5 py-0.5 flex items-center gap-1">
+                  <Crown className="w-3.5 h-3.5" />
+                  <span>{isRTL ? 'اشتراك شهري' : 'Monthly Subscription'}</span>
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="font-black bg-slate-100 dark:bg-slate-800 uppercase text-[10px]">{session.pricingType}</Badge>
+              )}
             </div>
+
+            {/* Deducted Package Hours if applicable */}
+            {(session.deductedMinutes || session.deductedHours) && (
+              <div className="flex justify-between items-center text-sm p-3 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-700 dark:text-purple-300 font-bold">
+                <span className="flex items-center gap-1.5">
+                  <Package className="w-4 h-4" />
+                  <span>{isRTL ? 'الوقت المخصوم من الباقة' : 'Deducted from Package'}</span>
+                </span>
+                <span className="font-mono font-black">
+                  {session.deductedMinutes 
+                    ? `${Math.floor(session.deductedMinutes / 60)}h ${Math.round(session.deductedMinutes % 60)}m` 
+                    : `${session.deductedHours} hours`}
+                </span>
+              </div>
+            )}
+
             <div className="flex justify-between items-center text-sm">
               <span className="text-slate-500 font-bold">{t('sessions.timeCost')}</span>
-              <span className="font-black text-slate-700 dark:text-slate-300 font-mono">{formatCurrency(session.timeCost || 0)}</span>
+              <span className="font-black text-slate-700 dark:text-slate-300 font-mono">
+                {(isPackage || isMonthly) && (session.timeCost === 0 || !session.timeCost)
+                  ? (isRTL ? '0 ج.م (مغطى بالاشتراك)' : '0 EGP (Covered)')
+                  : formatCurrency(session.timeCost || 0)}
+              </span>
             </div>
             
             {session.services && session.services.length > 0 && (

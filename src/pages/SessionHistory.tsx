@@ -60,13 +60,26 @@ export default function SessionHistory() {
     const formattedSelected = format(selectedDate, 'yyyy-MM-dd');
 
     return completedSessions.filter(session => {
-      const sessionDate = new Date(toMillis(session.startTime));
-      const isSameDay = format(sessionDate, 'yyyy-MM-dd') === formattedSelected;
+      const sStart = toMillis(session.startTime || session.createdAt);
+      const sEnd = session.endTime ? toMillis(session.endTime) : sStart;
+      const startDateFormatted = sStart ? format(new Date(sStart), 'yyyy-MM-dd') : '';
+      const endDateFormatted = sEnd ? format(new Date(sEnd), 'yyyy-MM-dd') : '';
+
+      const isSameDay = startDateFormatted === formattedSelected || endDateFormatted === formattedSelected;
+      
       const matchesSearch = 
-        session.userName.toLowerCase().includes(searchLower) ||
-        (session.phoneNumber && session.phoneNumber.includes(searchLower));
+        !searchLower ||
+        (session.userName && session.userName.toLowerCase().includes(searchLower)) ||
+        (session.phoneNumber && session.phoneNumber.includes(searchLower)) ||
+        (session.notes && session.notes.toLowerCase().includes(searchLower)) ||
+        (session.roomAssignment?.roomName && session.roomAssignment.roomName.toLowerCase().includes(searchLower));
+        
       return isSameDay && matchesSearch;
-    }).sort((a, b) => toMillis(b.startTime) - toMillis(a.startTime));
+    }).sort((a, b) => {
+      const aTime = toMillis(a.endTime || a.startTime || a.createdAt);
+      const bTime = toMillis(b.endTime || b.startTime || b.createdAt);
+      return bTime - aTime;
+    });
   }, [completedSessions, selectedDate, searchQuery]);
 
   const handleDeleteSession = useCallback(async (id: string) => {
