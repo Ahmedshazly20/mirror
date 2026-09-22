@@ -226,6 +226,18 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
   const selectedRoom = availableRooms.find(r => r.id === selectedRoomId);
   const selectedTable = selectedRoom?.tables?.find(t => t.id === selectedTableId);
 
+  const isSharedSpace = useMemo(() => {
+    if (!selectedRoomId) return true;
+    return mapRoomToPricingKey(selectedRoom, settings.pricingRules) === 'shared_space';
+  }, [selectedRoomId, selectedRoom, settings.pricingRules]);
+
+  const effectiveGroupMultiplier = useMemo(() => {
+    if (isSharedSpace && !isSubscribed) {
+      return Math.max(1, groupSize || 1);
+    }
+    return 1;
+  }, [isSharedSpace, isSubscribed, groupSize]);
+
   // ─── Validation ───────────────────────────────────────────────────────────
   const validatePhone = (phone: string) =>
     /^01[0125][0-9]{8}$/.test(phone);
@@ -239,7 +251,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
       return;
     }
 
-    if (selectedTable && groupSize > selectedTable.capacity) {
+    if (!isSharedSpace && selectedTable && groupSize > selectedTable.capacity) {
       setGroupSizeError(true);
       return;
     }
@@ -271,7 +283,16 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
         tableId: selectedTableId || '',
         tableNumber: selectedTable?.number || 0,
         tableLabel: tableLabel,
-        groupSize: groupSize || 1,
+        groupSize: isSharedSpace ? (groupSize || 1) : 1,
+      };
+    } else {
+      roomAssignment = {
+        roomId: '',
+        roomName: isRTL ? 'المساحة المشتركة' : 'Shared Space',
+        tableId: '',
+        tableNumber: 0,
+        tableLabel: isRTL ? 'مساحة عامة' : 'Shared Space',
+        groupSize: isSharedSpace ? (groupSize || 1) : 1,
       };
     }
 
@@ -297,7 +318,8 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
         undefined,
         undefined,
         durationMode,
-        durationMode === 'fixed' ? selectedHours : undefined
+        durationMode === 'fixed' ? selectedHours : undefined,
+        isSharedSpace ? (groupSize || 1) : 1
       );
       toast.success(t('newSession.started'));
       resetForm();
@@ -702,7 +724,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                     </span>
                   </div>
                   <span className="font-black text-cyan-600 dark:text-cyan-400 bg-cyan-500/15 px-2.5 py-1 rounded-xl">
-                    {selectedRoom.pricePerHour} {isRTL ? 'ج.م / ساعة' : 'EGP / hr'}
+                    {pricingService.getHourlyRate(selectedRoom, settings.pricingRules)} {isRTL ? 'ج.م / ساعة' : 'EGP / hr'}
                   </span>
                 </div>
               )}
@@ -787,9 +809,9 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                 )}
               </AnimatePresence>
 
-              {/* Group Size */}
+              {/* Group Size for Non-Shared Room Table */}
               <AnimatePresence>
-                {selectedTableId && (
+                {!isSharedSpace && selectedTableId && (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
@@ -829,6 +851,69 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                   </motion.div>
                 )}
               </AnimatePresence>
+            </div>
+          )}
+
+          {/* ── Group Size & Multiplier for Shared Space ONLY ── */}
+          {isSharedSpace && !isSubscribed && (
+            <div className="p-4 rounded-3xl bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 space-y-3 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-cyan-500" />
+                  <span>{isRTL ? 'عدد الأشخاص (Shared Space)' : 'Group Size / Multiplier'}</span>
+                </Label>
+                <span className="text-xs font-black text-cyan-700 dark:text-cyan-300 bg-cyan-500/15 px-2.5 py-0.5 rounded-full">
+                  {groupSize} {isRTL ? (groupSize === 1 ? 'شخص' : groupSize === 2 ? 'شخصين' : 'أشخاص') : (groupSize === 1 ? 'Person' : 'Persons')}
+                  {groupSize > 1 ? ` (×${groupSize})` : ''}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {[1, 2, 3, 4, 5].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setGroupSize(num)}
+                    className={cn(
+                      "flex-1 py-2 rounded-xl text-xs font-bold border transition-all",
+                      groupSize === num
+                        ? "bg-cyan-500 text-white border-cyan-500 shadow-md shadow-cyan-500/20 scale-[1.02]"
+                        : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-cyan-500/40"
+                    )}
+                  >
+                    {num} {isRTL ? (num === 1 ? 'فرد' : num === 2 ? 'فردين' : 'أفراد') : (num === 1 ? 'p' : 'p')}
+                  </button>
+                ))}
+                {/* Stepper for custom count */}
+                <div className="flex items-center border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 overflow-hidden shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setGroupSize(Math.max(1, groupSize - 1))}
+                    className="px-2.5 py-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold"
+                  >
+                    -
+                  </button>
+                  <span className="px-2 font-mono font-bold text-xs">{groupSize}</span>
+                  <button
+                    type="button"
+                    onClick={() => setGroupSize(groupSize + 1)}
+                    className="px-2.5 py-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {groupSize > 1 && (
+                <div className="text-[11px] font-semibold text-cyan-700 dark:text-cyan-300 bg-cyan-500/10 p-2.5 rounded-2xl flex items-center gap-2 border border-cyan-500/20">
+                  <Sparkles className="w-4 h-4 text-cyan-500 shrink-0" />
+                  <span>
+                    {isRTL
+                      ? `سيتم حساب تكلفة الوقت مضروبة في ${groupSize} (${groupSize} × ${pricingService.getHourlyRate('shared_space', settings.pricingRules)} = ${pricingService.getHourlyRate('shared_space', settings.pricingRules) * groupSize} ج.م / ساعة)`
+                      : `Time rate multiplied by ${groupSize} (${groupSize} × ${pricingService.getHourlyRate('shared_space', settings.pricingRules)} = ${pricingService.getHourlyRate('shared_space', settings.pricingRules) * groupSize} EGP/hr)`}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -1016,7 +1101,8 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                   </Label>
                   {durationMode === 'fixed' && (
                     <span className="text-xs font-black text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 px-2.5 py-1 rounded-full">
-                      {selectedHours} {isRTL ? (selectedHours === 1 ? 'ساعة' : selectedHours === 2 ? 'ساعتان' : selectedHours <= 10 ? 'ساعات' : 'ساعة') : 'Hours'} — {pricingService.calculateSessionModeCost(selectedRoom || 'shared_space', 'fixed', selectedHours, selectedHours * 60, settings.pricingRules || DEFAULT_PRICING_TABLE)} EGP
+                      {selectedHours} {isRTL ? (selectedHours === 1 ? 'ساعة' : selectedHours === 2 ? 'ساعتان' : selectedHours <= 10 ? 'ساعات' : 'ساعة') : 'Hours'} — {pricingService.calculateSessionModeCost(selectedRoom || 'shared_space', 'fixed', selectedHours, selectedHours * 60, settings.pricingRules || DEFAULT_PRICING_TABLE) * effectiveGroupMultiplier} EGP
+                      {effectiveGroupMultiplier > 1 ? ` (${effectiveGroupMultiplier} ${isRTL ? 'أفراد' : 'persons'})` : ''}
                     </span>
                   )}
                 </div>
@@ -1067,7 +1153,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                     <Zap className={`w-5 h-5 ${durationMode === 'full_day' ? 'text-indigo-500' : 'text-slate-400'}`} />
                     <span className="text-xs font-black">{isRTL ? 'يوم كامل' : 'Full Day'}</span>
                     <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold">
-                      {pricingService.getFullDayPrice(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE)} EGP
+                      {pricingService.getFullDayPrice(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE) * effectiveGroupMultiplier} EGP
                     </span>
                   </button>
 
@@ -1092,7 +1178,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                     <Calculator className={`w-5 h-5 ${durationMode === 'open' ? 'text-amber-500' : 'text-slate-400'}`} />
                     <span className="text-xs font-black">{isRTL ? 'جلسة مفتوحة' : 'Open Time'}</span>
                     <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">
-                      {pricingService.getHourlyRate(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE)} EGP/h
+                      {pricingService.getHourlyRate(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE) * effectiveGroupMultiplier} EGP/h
                     </span>
                   </button>
                 </div>
@@ -1110,13 +1196,14 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                     </div>
                     <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
                       {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => {
-                        const price = pricingService.calculateSessionModeCost(
+                        const basePrice = pricingService.calculateSessionModeCost(
                           selectedRoom || 'shared_space',
                           'fixed',
                           h,
                           h * 60,
                           settings.pricingRules || DEFAULT_PRICING_TABLE
                         );
+                        const price = basePrice * effectiveGroupMultiplier;
                         const isSelected = selectedHours === h;
                         return (
                           <button
@@ -1154,7 +1241,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                       <span>{isRTL ? 'يوم كامل حتى 8 ساعات' : 'Full Day package up to 8 billable hours'}</span>
                     </div>
                     <div className="font-black text-sm text-indigo-600 dark:text-indigo-400">
-                      {pricingService.getFullDayPrice(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE)} EGP
+                      {pricingService.getFullDayPrice(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE) * effectiveGroupMultiplier} EGP
                     </div>
                   </motion.div>
                 )}
@@ -1171,7 +1258,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                       <span>{isRTL ? 'حساب الوقت الفعلي حسب الساعة' : 'Billed according to actual elapsed time'}</span>
                     </div>
                     <div className="font-black text-sm text-amber-600 dark:text-amber-400">
-                      {pricingService.getHourlyRate(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE)} EGP / {isRTL ? 'ساعة' : 'hr'}
+                      {pricingService.getHourlyRate(selectedRoom || 'shared_space', settings.pricingRules || DEFAULT_PRICING_TABLE) * effectiveGroupMultiplier} EGP / {isRTL ? 'ساعة' : 'hr'}
                     </div>
                   </motion.div>
                 )}

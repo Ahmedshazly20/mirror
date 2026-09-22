@@ -21,7 +21,7 @@ import {
 } from '../types';
 import { sessionService } from '../services/sessionService';
 import { toMillis } from '../lib/utils-workspace';
-import { DEFAULT_BOOKABLE_ROOMS, DEFAULT_PRICING_TABLE, pricingService } from '../services/pricingService';
+import { DEFAULT_BOOKABLE_ROOMS, DEFAULT_PRICING_TABLE, pricingService, mapRoomToPricingKey } from '../services/pricingService';
 
 interface WorkspaceState {
   // Auth State
@@ -262,6 +262,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           activeRules
         );
         type = 'hourly';
+      }
+
+      // Shared Space group multiplier: if multiple persons are in Shared Space, time is multiplied by number of persons
+      const pricingKey = mapRoomToPricingKey(spaceOrRoom, activeRules);
+      if (pricingKey === 'shared_space') {
+        const persons = Math.max(1, session.numberOfPersons || session.roomAssignment?.groupSize || 1);
+        if (persons > 1) {
+          timeCost = Math.round(timeCost * persons * 100) / 100;
+        }
       }
     }
 

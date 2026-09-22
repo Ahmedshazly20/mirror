@@ -51,6 +51,7 @@ export interface Session {
   pricingType: PricingType;
   durationMode?: SessionDurationMode;
   selectedHours?: number; // 1 - 8 hours when fixed
+  numberOfPersons?: number; // Multiplier for Shared Space time rate
   isSubscribed: boolean;
   timeCost: number;
   servicesCost: number;
@@ -99,12 +100,21 @@ export type RoomType =
   | 'lecture_room' 
   | 'office_2_3' 
   | 'office_1' 
-  | 'office_4';
+  | 'office_4'
+  | string;
+
+export interface SpaceTypeConfig {
+  key: string;
+  labelEn: string;
+  labelAr: string;
+  active: boolean;
+  isDefault?: boolean;
+}
 
 export interface Room {
   id: string;
   name: string;
-  pricePerHour: number;
+  pricePerHour?: number; // Optional legacy field; pricing is derived strictly from Pricing matrix by pricingType/type
   capacity: number;
   tables: RoomTable[];
   type?: RoomType;
@@ -291,7 +301,8 @@ export interface WorkspaceSettings {
     dailyCapPrice: number;
     minChargeMinutes: number;
   };
-  pricingRules?: Record<RoomType, Record<number, number>>;
+  pricingRules?: Record<string, Record<number, number>>;
+  spaceTypes?: SpaceTypeConfig[];
   subscriptions: {
     enabled: boolean;
     monthlyPrice: number;

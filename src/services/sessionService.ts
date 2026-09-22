@@ -80,6 +80,7 @@ export const sessionService = {
     initialDeposit?: number,
     durationMode?: 'fixed' | 'full_day' | 'open',
     selectedHours?: number,
+    numberOfPersons?: number,
   ): Promise<string> {
     // If started from a booking and a start request is already processing, await and return it
     if (bookingId && inFlightBookingStarts.has(bookingId)) {
@@ -201,6 +202,7 @@ export const sessionService = {
           pricingType: bookingId ? 'booking' : pricingType,
           durationMode: bookingId ? undefined : durationMode,
           selectedHours: bookingId ? undefined : selectedHours,
+          numberOfPersons: numberOfPersons || normalizedRoomAssignment?.groupSize || 1,
           isSubscribed,
           subscriptionId: subscriptionId || null,
           bookingId: bookingId || null,
@@ -303,15 +305,28 @@ export const sessionService = {
     sessionId: string,
     durationMode: 'fixed' | 'full_day' | 'open',
     selectedHours?: number,
+    numberOfPersons?: number,
   ) {
     try {
       await updateDoc(doc(db, 'sessions', sessionId), cleanData({
         durationMode,
         selectedHours: durationMode === 'fixed' ? (selectedHours || 1) : null,
-        pricingType: durationMode === 'full_day' ? 'daily' : 'hourly'
+        pricingType: durationMode === 'full_day' ? 'daily' : 'hourly',
+        ...(numberOfPersons !== undefined ? { numberOfPersons: Math.max(1, numberOfPersons) } : {})
       }));
     } catch (error) {
       this._handleFirebaseError(error, 'Update Session Duration');
+      throw error;
+    }
+  },
+
+  async updateSessionPersons(sessionId: string, numberOfPersons: number) {
+    try {
+      await updateDoc(doc(db, 'sessions', sessionId), cleanData({
+        numberOfPersons: Math.max(1, numberOfPersons)
+      }));
+    } catch (error) {
+      this._handleFirebaseError(error, 'Update Session Persons');
       throw error;
     }
   },
@@ -501,6 +516,7 @@ export const sessionService = {
     const q = query(
       collection(db, 'sessions'),
       where('status', '==', 'completed'),
+      limit(30),
     );
     return onSnapshot(
       q,
@@ -510,9 +526,9 @@ export const sessionService = {
           (d) => ({ id: d.id, ...d.data() } as Session),
         );
         completed.sort((a, b) => {
-          const aTime = toMillis(a.endTime || a.startTime || a.createdAt);
-          const bTime = toMillis(b.endTime || b.startTime || b.createdAt);
-          return bTime - aTime;
+          const aEnd = a.endTime ? toMillis(a.endTime) : 0;
+          const bEnd = b.endTime ? toMillis(b.endTime) : 0;
+          return bEnd - aEnd;
         });
         callback(completed);
       },

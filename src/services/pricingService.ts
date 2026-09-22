@@ -1,28 +1,36 @@
-import { RoomType, Room } from '../types';
+import { RoomType, Room, SpaceTypeConfig } from '../types';
 
 export interface SpaceTypeOption {
-  key: RoomType;
+  key: string;
   labelEn: string;
   labelAr: string;
+  active?: boolean;
 }
 
-export const SUPPORTED_SPACE_TYPES: SpaceTypeOption[] = [
-  { key: 'shared_space', labelEn: 'Shared Space', labelAr: 'Shared Space (مساحة مشتركة)' },
-  { key: 'single_pod',   labelEn: 'Single Pod',   labelAr: 'Single Pod (غرفة فردية)' },
-  { key: 'meeting_room', labelEn: 'Meeting Room', labelAr: 'Meeting Room (غرفة اجتماعات)' },
-  { key: 'lecture_room', labelEn: 'Lecture Room', labelAr: 'Lecture Room (قاعة محاضرات)' },
-  { key: 'office_2_3',   labelEn: 'Office 2/3',   labelAr: 'Office 2 / 3 (مكتب 2 / 3 أفراد)' },
-  { key: 'office_1',     labelEn: 'Office 1',     labelAr: 'Office 1 (مكتب 1)' },
-  { key: 'office_4',     labelEn: 'Office 4',     labelAr: 'Office 4 (مكتب 4 أفراد)' },
+export const DEFAULT_SPACE_TYPES: SpaceTypeConfig[] = [
+  { key: 'shared_space', labelEn: 'Shared Space', labelAr: 'مساحة مشتركة', active: true, isDefault: true },
+  { key: 'single_pod',   labelEn: 'Single Pod',   labelAr: 'غرفة فردية (Pod)', active: true, isDefault: true },
+  { key: 'meeting_room', labelEn: 'Meeting Room', labelAr: 'غرفة اجتماعات', active: true, isDefault: true },
+  { key: 'lecture_room', labelEn: 'Lecture Room', labelAr: 'قاعة محاضرات', active: true, isDefault: true },
+  { key: 'office_2_3',   labelEn: 'Office 2/3',   labelAr: 'مكتب 2 / 3', active: true, isDefault: true },
+  { key: 'office_1',     labelEn: 'Office 1',     labelAr: 'مكتب 1', active: true, isDefault: true },
+  { key: 'office_4',     labelEn: 'Office 4',     labelAr: 'مكتب 4', active: true, isDefault: true },
 ];
 
+export const SUPPORTED_SPACE_TYPES: SpaceTypeOption[] = DEFAULT_SPACE_TYPES.map(s => ({
+  key: s.key,
+  labelEn: s.labelEn,
+  labelAr: `${s.labelEn} (${s.labelAr})`,
+  active: s.active
+}));
+
 export const BOOKABLE_ROOM_OPTIONS = [
-  { id: 'meeting_room', nameEn: 'Meeting Room', nameAr: 'Meeting Room (غرفة اجتماعات)', pricingKey: 'meeting_room' as RoomType, defaultCapacity: 8, defaultPrice: 200 },
-  { id: 'lecture_room', nameEn: 'Lecture Room', nameAr: 'Lecture Room (قاعة محاضرات)', pricingKey: 'lecture_room' as RoomType, defaultCapacity: 25, defaultPrice: 230 },
-  { id: 'office_1',     nameEn: 'Office 1',     nameAr: 'Office 1 (مكتب 1)',         pricingKey: 'office_1' as RoomType,     defaultCapacity: 2, defaultPrice: 125 },
-  { id: 'office_2',     nameEn: 'Office 2',     nameAr: 'Office 2 (مكتب 2)',         pricingKey: 'office_2_3' as RoomType,   defaultCapacity: 3, defaultPrice: 110 },
-  { id: 'office_3',     nameEn: 'Office 3',     nameAr: 'Office 3 (مكتب 3)',         pricingKey: 'office_2_3' as RoomType,   defaultCapacity: 3, defaultPrice: 110 },
-  { id: 'office_4',     nameEn: 'Office 4',     nameAr: 'Office 4 (مكتب 4)',         pricingKey: 'office_4' as RoomType,     defaultCapacity: 4, defaultPrice: 150 },
+  { id: 'meeting_room', nameEn: 'Meeting Room', nameAr: 'Meeting Room (غرفة اجتماعات)', pricingKey: 'meeting_room', defaultCapacity: 8, defaultPrice: 200 },
+  { id: 'lecture_room', nameEn: 'Lecture Room', nameAr: 'Lecture Room (قاعة محاضرات)', pricingKey: 'lecture_room', defaultCapacity: 25, defaultPrice: 230 },
+  { id: 'office_1',     nameEn: 'Office 1',     nameAr: 'Office 1 (مكتب 1)',         pricingKey: 'office_1',     defaultCapacity: 2, defaultPrice: 125 },
+  { id: 'office_2',     nameEn: 'Office 2',     nameAr: 'Office 2 (مكتب 2)',         pricingKey: 'office_2_3',   defaultCapacity: 3, defaultPrice: 110 },
+  { id: 'office_3',     nameEn: 'Office 3',     nameAr: 'Office 3 (مكتب 3)',         pricingKey: 'office_2_3',   defaultCapacity: 3, defaultPrice: 110 },
+  { id: 'office_4',     nameEn: 'Office 4',     nameAr: 'Office 4 (مكتب 4)',         pricingKey: 'office_4',     defaultCapacity: 4, defaultPrice: 150 },
 ];
 
 export const DEFAULT_BOOKABLE_ROOMS: Room[] = [
@@ -34,7 +42,7 @@ export const DEFAULT_BOOKABLE_ROOMS: Room[] = [
   { id: 'room-office-4', name: 'Office 4',     type: 'office_4',     pricingType: 'office_4',     capacity: 4,  pricePerHour: 150, status: 'available', active: true, tables: [] },
 ];
 
-export const DEFAULT_PRICING_TABLE: Record<RoomType, Record<number, number>> = {
+export const DEFAULT_PRICING_TABLE: Record<string, Record<number, number>> = {
   shared_space: { 1: 30,  2: 55,  3: 80,  4: 100, 5: 120, 6: 130, 7: 140, 8: 150 },
   single_pod:   { 1: 30,  2: 55,  3: 80,  4: 100, 5: 120, 6: 130, 7: 140, 8: 150 },
   meeting_room: { 1: 200, 2: 386, 3: 557, 4: 714, 5: 857, 6: 936, 7: 1060, 8: 1140 },
@@ -44,7 +52,7 @@ export const DEFAULT_PRICING_TABLE: Record<RoomType, Record<number, number>> = {
   office_4:     { 1: 150, 2: 280, 3: 400, 4: 500, 5: 580, 6: 655, 7: 735, 8: 800 },
 };
 
-export const ROOM_TYPE_LABELS: Record<RoomType, { en: string; ar: string }> = {
+export const ROOM_TYPE_LABELS: Record<string, { en: string; ar: string }> = {
   shared_space: { en: 'Shared Space', ar: 'مساحة مشتركة' },
   single_pod:   { en: 'Single Pod',   ar: 'غرفة فردية (Pod)' },
   meeting_room: { en: 'Meeting Room', ar: 'غرفة اجتماعات' },
@@ -54,29 +62,72 @@ export const ROOM_TYPE_LABELS: Record<RoomType, { en: string; ar: string }> = {
   office_4:     { en: 'Office 4',     ar: 'مكتب 4' },
 };
 
-export function mapRoomToPricingKey(room: Room | { name?: string; type?: string; pricingType?: string } | string | undefined): RoomType {
+/**
+ * Returns the effective list of space types (from settings or defaults)
+ */
+export function getEffectiveSpaceTypes(spaceTypes?: SpaceTypeConfig[] | null): SpaceTypeConfig[] {
+  if (spaceTypes && spaceTypes.length > 0) {
+    return spaceTypes;
+  }
+  return DEFAULT_SPACE_TYPES;
+}
+
+/**
+ * Generates a slug key from a label string (e.g. "Private Room" -> "private_room")
+ */
+export function generateSpaceTypeKey(label: string): string {
+  const clean = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return clean || `space_${Date.now()}`;
+}
+
+export function mapRoomToPricingKey(
+  room: Room | { name?: string; type?: string; pricingType?: string } | string | undefined,
+  availableSpaceTypesOrTable?: SpaceTypeConfig[] | Record<string, any> | null
+): string {
   if (!room) return 'shared_space';
+  
   if (typeof room === 'string') {
-    const s = room.toLowerCase().trim();
-    if (s.includes('lecture') || s.includes('محاضر') || s.includes('قاعة')) return 'lecture_room';
-    if (s.includes('meeting') || s.includes('اجتماع')) return 'meeting_room';
-    if (s.includes('office 1') || s === 'office_1' || s.includes('مكتب 1')) return 'office_1';
-    if (s.includes('office 4') || s === 'office_4' || s.includes('مكتب 4')) return 'office_4';
-    if (s.includes('office 2') || s.includes('office 3') || s === 'office_2_3' || s === 'office_2' || s === 'office_3' || s.includes('مكتب 2') || s.includes('مكتب 3')) return 'office_2_3';
-    if (s.includes('single') || s.includes('pod') || s.includes('booth') || s === 'single_pod' || s.includes('فردي')) return 'single_pod';
-    if (s.includes('shared') || s === 'shared_space' || s.includes('مشترك') || s.includes('عام') || s === 'open_space' || s.includes('open')) return 'shared_space';
-    if (DEFAULT_PRICING_TABLE[s as RoomType]) return s as RoomType;
-    return 'shared_space';
+    const s = room.trim();
+    const sLower = s.toLowerCase();
+
+    // Check against available space types
+    if (availableSpaceTypesOrTable) {
+      if (Array.isArray(availableSpaceTypesOrTable)) {
+        const match = availableSpaceTypesOrTable.find(
+          st => st.key === s || st.key.toLowerCase() === sLower || st.labelEn.toLowerCase() === sLower
+        );
+        if (match) return match.key;
+      } else if (typeof availableSpaceTypesOrTable === 'object' && availableSpaceTypesOrTable[s]) {
+        return s;
+      }
+    }
+
+    if (DEFAULT_PRICING_TABLE[s]) return s;
+
+    if (sLower.includes('lecture') || sLower.includes('محاضر') || sLower.includes('قاعة')) return 'lecture_room';
+    if (sLower.includes('meeting') || sLower.includes('اجتماع')) return 'meeting_room';
+    if (sLower.includes('office 1') || sLower === 'office_1' || sLower.includes('مكتب 1')) return 'office_1';
+    if (sLower.includes('office 4') || sLower === 'office_4' || sLower.includes('مكتب 4')) return 'office_4';
+    if (sLower.includes('office 2') || sLower.includes('office 3') || sLower === 'office_2_3' || sLower === 'office_2' || sLower === 'office_3' || sLower.includes('مكتب 2') || sLower.includes('مكتب 3')) return 'office_2_3';
+    if (sLower.includes('single') || sLower.includes('pod') || sLower.includes('booth') || sLower === 'single_pod' || sLower.includes('فردي')) return 'single_pod';
+    if (sLower.includes('shared') || sLower === 'shared_space' || sLower.includes('مشترك') || sLower.includes('عام') || sLower === 'open_space' || sLower.includes('open')) return 'shared_space';
+    
+    return s;
   }
   
+  // Object room resolution: prefer pricingType, then type, then name
   if (room.pricingType) {
-    return mapRoomToPricingKey(room.pricingType);
+    return mapRoomToPricingKey(room.pricingType, availableSpaceTypesOrTable);
   }
   if (room.type) {
-    return mapRoomToPricingKey(room.type);
+    return mapRoomToPricingKey(room.type, availableSpaceTypesOrTable);
   }
   if (room.name) {
-    return mapRoomToPricingKey(room.name);
+    return mapRoomToPricingKey(room.name, availableSpaceTypesOrTable);
   }
   return 'shared_space';
 }
@@ -88,10 +139,10 @@ export const pricingService = {
   getExactPrice(
     roomOrType: Room | RoomType | string | undefined,
     hours: number,
-    customTable?: Record<RoomType, Record<number, number>> | null
+    customTable?: Record<string, Record<number, number>> | null
   ): number | null {
     if (hours < 1 || hours > 8) return null;
-    const pricingKey = mapRoomToPricingKey(roomOrType as any);
+    const pricingKey = mapRoomToPricingKey(roomOrType, customTable);
     const table = customTable || DEFAULT_PRICING_TABLE;
     const roomPrices = table[pricingKey] || table['shared_space'] || DEFAULT_PRICING_TABLE.shared_space;
     if (!roomPrices) return null;
@@ -103,11 +154,11 @@ export const pricingService = {
    */
   getFullDayPrice(
     roomOrType: Room | RoomType | string | undefined,
-    customTable?: Record<RoomType, Record<number, number>> | null
+    customTable?: Record<string, Record<number, number>> | null
   ): number {
     const p8 = this.getExactPrice(roomOrType, 8, customTable);
     if (p8 !== null) return p8;
-    const pricingKey = mapRoomToPricingKey(roomOrType as any);
+    const pricingKey = mapRoomToPricingKey(roomOrType, customTable);
     const table = customTable || DEFAULT_PRICING_TABLE;
     const roomPrices = table[pricingKey] || table['shared_space'] || DEFAULT_PRICING_TABLE.shared_space;
     return roomPrices?.[8] ?? 150;
@@ -118,11 +169,11 @@ export const pricingService = {
    */
   getHourlyRate(
     roomOrType: Room | RoomType | string | undefined,
-    customTable?: Record<RoomType, Record<number, number>> | null
+    customTable?: Record<string, Record<number, number>> | null
   ): number {
     const p1 = this.getExactPrice(roomOrType, 1, customTable);
     if (p1 !== null) return p1;
-    const pricingKey = mapRoomToPricingKey(roomOrType as any);
+    const pricingKey = mapRoomToPricingKey(roomOrType, customTable);
     const table = customTable || DEFAULT_PRICING_TABLE;
     const roomPrices = table[pricingKey] || table['shared_space'] || DEFAULT_PRICING_TABLE.shared_space;
     return roomPrices?.[1] ?? 30;
@@ -139,9 +190,9 @@ export const pricingService = {
     mode: 'fixed' | 'full_day' | 'open' | undefined,
     selectedHours: number | undefined,
     elapsedMinutes: number,
-    customTable?: Record<RoomType, Record<number, number>> | null
+    customTable?: Record<string, Record<number, number>> | null
   ): number {
-    const pricingKey = mapRoomToPricingKey(roomOrType as any);
+    const pricingKey = mapRoomToPricingKey(roomOrType, customTable);
     const table = customTable || DEFAULT_PRICING_TABLE;
     const roomPrices = table[pricingKey] || table['shared_space'] || DEFAULT_PRICING_TABLE.shared_space;
 
@@ -156,27 +207,27 @@ export const pricingService = {
       return this.calculateRoomPrice(roomOrType, hours, customTable);
     }
 
-    // mode === 'open' or fallback: Hourly Rate × Actual Duration (Minutes)
+    // mode === 'open' or fallback: Hourly Rate (1st hour) × Actual Duration (Minutes)
     const firstHourPrice = roomPrices?.[1] ?? 30;
     const exactCost = (elapsedMinutes / 60) * firstHourPrice;
     return Math.round(exactCost * 100) / 100;
   },
 
   /**
-   * Calculates total booking price based on room/space type and duration (in hours).
+   * Calculates total booking or room price based on space type/pricingType and duration (in hours).
    * Uses non-linear pricing matrix rules directly from settings / DEFAULT_PRICING_TABLE.
-   * Total price for duration (e.g. 3 hours in shared space = 80 EGP).
    * 8 hours is the Maximum Billable Duration (Cap) - any duration >= 8 hours uses the 8-hour rate directly.
+   * Never relies on rooms.pricePerHour as an independent source.
    */
   calculateRoomPrice(
     roomOrType: Room | RoomType | string | undefined,
     durationHours: number,
-    customTable?: Record<RoomType, Record<number, number>> | null,
+    customTable?: Record<string, Record<number, number>> | null,
     fallbackHourlyPrice: number = 30
   ): number {
     if (durationHours <= 0) return 0;
     
-    const pricingKey = mapRoomToPricingKey(roomOrType as any);
+    const pricingKey = mapRoomToPricingKey(roomOrType, customTable);
     const table = customTable || DEFAULT_PRICING_TABLE;
     const roomPrices = table[pricingKey] || table['shared_space'] || DEFAULT_PRICING_TABLE.shared_space;
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Timer, Coffee, CheckCircle2, MoreVertical, Trash2, Phone, Wifi, Clock, X, DoorOpen, Zap, PlusCircle, Calculator } from 'lucide-react';
+import { Timer, Coffee, CheckCircle2, MoreVertical, Trash2, Phone, Wifi, Clock, X, DoorOpen, Zap, PlusCircle, Calculator, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -19,7 +19,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useWorkspaceStore } from '../../../store';
 import { formatCurrency, formatDuration, formatPackageBalance, getSubscriptionRemainingMinutes, getSubscriptionTotalMinutes, toMillis } from '../../../lib/utils-workspace';
 import { sessionService } from '../../../services/sessionService';
-import { pricingService, DEFAULT_PRICING_TABLE } from '../../../services/pricingService';
+import { pricingService, mapRoomToPricingKey, DEFAULT_PRICING_TABLE } from '../../../services/pricingService';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { Session } from '../../../types';
@@ -79,6 +79,9 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
 
   const activeRules = settings.pricingRules || DEFAULT_PRICING_TABLE;
   const activeRoom = (session.roomAssignment && rooms.find(r => r.id === session.roomAssignment?.roomId)) || 'shared_space';
+  const isShared = mapRoomToPricingKey(activeRoom, activeRules) === 'shared_space';
+  const numPersons = session.numberOfPersons || session.roomAssignment?.groupSize || 1;
+  const personMultiplier = (isShared && numPersons > 1) ? numPersons : 1;
   const mode = session.durationMode || (session.pricingType === 'daily' ? 'full_day' : 'open');
   const selectedHours = session.selectedHours || 4;
 
@@ -100,7 +103,7 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
 
   const handleUpdateDuration = async (newMode: 'fixed' | 'full_day' | 'open', newHours?: number) => {
     try {
-      await sessionService.updateSessionDuration(session.id, newMode, newHours);
+      await sessionService.updateSessionDuration(session.id, newMode, newHours, numPersons);
       toast.success(isRTL ? 'تم تحديث مدة الجلسة وإعادة حساب السعر' : 'Session duration updated and price recalculated');
       setIsExtendOpen(false);
     } catch (e) {
@@ -207,7 +210,7 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
         {/* ── Guest Duration & Extend Banner ── */}
         {!isBooking && !isSubscriber && (
           <div className="px-4 py-2.5 bg-slate-50/80 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-1.5 font-bold">
+            <div className="flex items-center gap-1.5 font-bold flex-wrap">
               {mode === 'fixed' ? (
                 <>
                   <Clock className="w-3.5 h-3.5 text-cyan-500" />
@@ -235,9 +238,15 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
                     {isRTL ? 'جلسة مفتوحة' : 'Open Session'}
                   </span>
                   <span className="text-[11px] text-amber-600 dark:text-amber-400 font-mono">
-                    ({pricingService.getHourlyRate(activeRoom, activeRules)} EGP/h)
+                    ({pricingService.getHourlyRate(activeRoom, activeRules) * personMultiplier} EGP/h)
                   </span>
                 </>
+              )}
+              {personMultiplier > 1 && (
+                <span className="text-[10px] font-bold text-cyan-700 dark:text-cyan-300 bg-cyan-500/15 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                  <Users className="w-2.5 h-2.5" />
+                  {personMultiplier} {isRTL ? 'أفراد' : 'persons'} (×{personMultiplier})
+                </span>
               )}
             </div>
 
@@ -413,7 +422,7 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
             {/* Hours Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8].map((h) => {
-                const targetPrice = pricingService.calculateSessionModeCost(activeRoom, 'fixed', h, h * 60, activeRules);
+                const targetPrice = pricingService.calculateSessionModeCost(activeRoom, 'fixed', h, h * 60, activeRules) * personMultiplier;
                 const isCurrent = mode === 'fixed' && selectedHours === h;
                 const diff = mode === 'fixed' ? targetPrice - timeCost : 0;
 
@@ -455,7 +464,7 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
               >
                 <span className="text-xs font-black">{isRTL ? 'يوم كامل (8س)' : 'Full Day (8h)'}</span>
                 <span className={`text-[11px] font-mono font-bold ${mode === 'full_day' ? 'text-indigo-100' : 'text-indigo-600 dark:text-indigo-400'}`}>
-                  {pricingService.getFullDayPrice(activeRoom, activeRules)} EGP
+                  {pricingService.getFullDayPrice(activeRoom, activeRules) * personMultiplier} EGP
                 </span>
               </button>
 
@@ -470,7 +479,7 @@ export const ActiveSessionCard = React.memo(function ActiveSessionCard({
               >
                 <span className="text-xs font-black">{isRTL ? 'جلسة مفتوحة' : 'Open Session'}</span>
                 <span className={`text-[11px] font-mono font-bold ${mode === 'open' ? 'text-amber-100' : 'text-amber-600 dark:text-amber-400'}`}>
-                  {pricingService.getHourlyRate(activeRoom, activeRules)} EGP/h
+                  {pricingService.getHourlyRate(activeRoom, activeRules) * personMultiplier} EGP/h
                 </span>
               </button>
             </div>

@@ -6,7 +6,6 @@ import {
   CreditCard,
   Package,
   Layers,
-  DoorOpen,
   Users,
   ChevronRight,
   ChevronLeft
@@ -26,7 +25,6 @@ import { GeneralSettingsSection } from '../components/settings/GeneralSettingsSe
 import { PricingSettingsSection } from '../components/settings/PricingSettingsSection';
 import { ServicesSettingsSection } from '../components/settings/ServicesSettingsSection';
 import { PackagesSettingsSection } from '../components/settings/PackagesSettingsSection';
-import { RoomsSettingsSection } from '../components/settings/RoomsSettingsSection';
 import { SubscriptionSettingsSection } from '../components/settings/SubscriptionSettingsSection';
 import { StaffManagement } from '../components/StaffManagement';
 
@@ -61,7 +59,6 @@ export default function Settings() {
     { id: 'services', label: t('settings.tabs.services'), icon: Layers, color: 'text-indigo-500', bg: 'bg-indigo-500/10' },
     { id: 'subscriptions', label: t('settings.tabs.subscriptions'), icon: CreditCard, color: 'text-violet-500', bg: 'bg-violet-500/10' },
     { id: 'packages', label: t('settings.tabs.packages'), icon: Package, color: 'text-amber-500', bg: 'bg-amber-500/10' },
-    { id: 'rooms', label: t('settings.tabs.rooms'), icon: DoorOpen, color: 'text-rose-500', bg: 'bg-rose-500/10' },
     ...(isOwner ? [{ id: 'staff', label: t('settings.tabs.staff'), icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' }] : []),
   ];
 
@@ -72,7 +69,6 @@ export default function Settings() {
       case 'services': return <ServicesSettingsSection localSettings={localSettings} setLocalSettings={setLocalSettings} availableServices={availableServices} />;
       case 'subscriptions': return <SubscriptionSettingsSection localSettings={localSettings} setLocalSettings={setLocalSettings} />;
       case 'packages': return <PackagesSettingsSection packages={packages} />;
-      case 'rooms': return <RoomsSettingsSection localSettings={localSettings} setLocalSettings={setLocalSettings} />;
       case 'staff': return <StaffManagement />;
       default: return <GeneralSettingsSection />;
     }

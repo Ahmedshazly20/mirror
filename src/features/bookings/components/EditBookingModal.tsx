@@ -43,7 +43,7 @@ export function EditBookingModal({
 }: EditBookingModalProps) {
   const { t, i18n } = useTranslation();
   const isRTL = i18n.language.startsWith('ar');
-  const { sessions } = useWorkspaceStore();
+  const { sessions, settings } = useWorkspaceStore();
 
   const [dateStr, setDateStr] = useState('');
   const [startTimeStr, setStartTimeStr] = useState('10:00');
@@ -99,8 +99,8 @@ export function EditBookingModal({
   // Calculated updated price
   const calculatedPrice = useMemo(() => {
     if (!selectedRoom || durationHours <= 0) return 0;
-    return pricingService.calculateRoomPrice(selectedRoom, durationHours);
-  }, [selectedRoom, durationHours]);
+    return pricingService.calculateRoomPrice(selectedRoom, durationHours, settings.pricingRules);
+  }, [selectedRoom, durationHours, settings.pricingRules]);
 
   // Overlap check against both bookings and active sessions
   const conflict = useMemo(() => {

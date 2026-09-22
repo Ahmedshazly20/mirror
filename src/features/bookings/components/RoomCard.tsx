@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { motion } from 'motion/react';
 import { Room } from '../../../types';
 import { pricingService, ROOM_TYPE_LABELS, mapRoomToPricingKey } from '../../../services/pricingService';
+import { useWorkspaceStore } from '../../../store';
 
 interface RoomCardProps {
   room: Room;
@@ -28,6 +29,7 @@ export const RoomCard = React.memo(function RoomCard({
   const { t, i18n } = useTranslation();
   const isRTL = i18n.language.startsWith('ar');
   const isAvailable = status !== 'fully_booked';
+  const { settings } = useWorkspaceStore();
 
   const handleSelectClick = React.useCallback(() => {
     if (isAvailable) {
@@ -36,9 +38,9 @@ export const RoomCard = React.memo(function RoomCard({
   }, [isAvailable, onSelect, room.id]);
 
   const pricingKey = mapRoomToPricingKey(room);
-  const hour1Price = pricingService.getExactPrice(pricingKey, 1) || room.pricePerHour;
+  const hour1Price = pricingService.getHourlyRate(room, settings.pricingRules);
   const calculatedDurationPrice = durationHours > 0 
-    ? pricingService.calculateRoomPrice(room, durationHours) 
+    ? pricingService.calculateRoomPrice(room, durationHours, settings.pricingRules) 
     : hour1Price;
   const labelObj = ROOM_TYPE_LABELS[pricingKey];
 

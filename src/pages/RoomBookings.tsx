@@ -271,10 +271,9 @@ export default function RoomBookings() {
   const calculatedTotalPrice = useMemo(() => {
     if (!selectedRoomData || bookingDurationHours <= 0) return 0;
     return pricingService.calculateRoomPrice(
-      selectedRoomData.type || selectedRoomData.pricingType,
+      selectedRoomData,
       bookingDurationHours,
-      settings.pricingRules,
-      selectedRoomData.pricePerHour
+      settings.pricingRules
     );
   }, [selectedRoomData, bookingDurationHours, settings.pricingRules]);
 
