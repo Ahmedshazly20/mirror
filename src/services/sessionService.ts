@@ -149,14 +149,46 @@ export const sessionService = {
 
         // Auto-register or update customer in customers collection
         let linkedCustomerId = existingCustomerId;
+        let linkedCustomerNumericId: number | null = null;
+
+        // If subscriptionId is provided but customer is not yet linked, try to extract customerId from subscription
+        if (subscriptionId && !linkedCustomerId) {
+          try {
+            const subDocRef = doc(db, 'subscriptions', subscriptionId);
+            const subSnap = await getDoc(subDocRef);
+            if (subSnap.exists()) {
+              const subData = subSnap.data();
+              if (subData.customerId) {
+                linkedCustomerId = subData.customerId;
+              }
+            }
+          } catch (subErr) {
+            console.warn('Could not lookup customer from subscription:', subErr);
+          }
+        }
+
         try {
           const { customerService } = await import('./customerService');
           const customer = await customerService.findOrCreateCustomer(userName, phoneNumber);
           if (customer) {
             linkedCustomerId = customer.id;
+            if (customer.customerId) {
+              linkedCustomerNumericId = customer.customerId;
+            }
           }
         } catch (custErr) {
           console.warn('Could not auto-register customer on session start:', custErr);
+        }
+
+        // If we have a customerId but not numeric ID, retrieve it
+        if (linkedCustomerId && !linkedCustomerNumericId) {
+          try {
+            const { customerService } = await import('./customerService');
+            const cust = await customerService.getCustomerById(linkedCustomerId);
+            if (cust && cust.customerId) {
+              linkedCustomerNumericId = cust.customerId;
+            }
+          } catch (_) {}
         }
 
         // Ensure roomAssignment fields are clean and defined if provided
@@ -190,20 +222,23 @@ export const sessionService = {
           }
         }
 
+        const isEffectiveSubscribed = Boolean(isSubscribed || subscriptionId);
+
         const rawSessionData: Omit<Session, 'id'> = {
           userName: userName.trim(),
           phoneNumber: phoneNumber.trim(),
           customerId: linkedCustomerId || null,
+          customerNumericId: linkedCustomerNumericId || undefined,
           whatsappOptIn,
           startTime: Timestamp.now(),
           endTime: null,
           status: 'active',
           services: [],
-          pricingType: bookingId ? 'booking' : pricingType,
+          pricingType: bookingId ? 'booking' : (isEffectiveSubscribed ? 'subscription' : pricingType),
           durationMode: bookingId ? undefined : durationMode,
           selectedHours: bookingId ? undefined : selectedHours,
           numberOfPersons: numberOfPersons || normalizedRoomAssignment?.groupSize || 1,
-          isSubscribed,
+          isSubscribed: isEffectiveSubscribed,
           subscriptionId: subscriptionId || null,
           bookingId: bookingId || null,
           timeCost: initialBookingPrice || 0,
@@ -333,10 +368,12 @@ export const sessionService = {
 
   async endSession(sessionId: string, finalData: Partial<Session>) {
     try {
+      const nowTs = Timestamp.now();
       const dataToUpdate = cleanData({
         ...finalData,
         status: 'completed',
-        endTime: Timestamp.now(),
+        endTime: nowTs,
+        completedAt: nowTs,
       });
       await updateDoc(doc(db, 'sessions', sessionId), dataToUpdate);
 
@@ -510,13 +547,12 @@ export const sessionService = {
     );
   },
 
-  // limit(30) بدل (50) — في معظم الحالات مش محتاج أكتر من كده
-  // الـ offline cache بيخلي الـ re-read من الـ cache مش من الـ network
+  // ── Completed Sessions Subscriptions ──
+  // Fetches completed sessions in real-time and sorts newest first
   subscribeToRecentSessions(callback: (sessions: Session[]) => void) {
     const q = query(
       collection(db, 'sessions'),
       where('status', '==', 'completed'),
-      limit(30),
     );
     return onSnapshot(
       q,
@@ -526,14 +562,36 @@ export const sessionService = {
           (d) => ({ id: d.id, ...d.data() } as Session),
         );
         completed.sort((a, b) => {
-          const aEnd = a.endTime ? toMillis(a.endTime) : 0;
-          const bEnd = b.endTime ? toMillis(b.endTime) : 0;
-          return bEnd - aEnd;
+          const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
+          const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+          return bTime - aTime;
         });
         callback(completed);
       },
-      (error) => console.error('🔴 Subscription Error (Recent):', error),
+      (error) => console.error('🔴 Subscription Error (Completed Sessions):', error),
     );
+  },
+
+  async getAllCompletedSessions(): Promise<Session[]> {
+    try {
+      const q = query(
+        collection(db, 'sessions'),
+        where('status', '==', 'completed'),
+      );
+      const snapshot = await getDocs(q);
+      const completed = snapshot.docs.map(
+        (d) => ({ id: d.id, ...d.data() } as Session),
+      );
+      completed.sort((a, b) => {
+        const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
+        const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+        return bTime - aTime;
+      });
+      return completed;
+    } catch (error) {
+      this._handleFirebaseError(error, 'Get All Completed Sessions');
+      return [];
+    }
   },
 
   // ── Print ─────────────────────────────────────────────────────────────────────

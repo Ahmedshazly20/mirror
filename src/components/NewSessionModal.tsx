@@ -305,6 +305,20 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
         }
       }
 
+      let effectiveCustomerId = selectedCustomer?.id;
+      if (!effectiveCustomerId && isSubscribed && selectedSubId) {
+        const sub = subscriptions.find(s => s.id === selectedSubId);
+        if (sub?.customerId) {
+          effectiveCustomerId = sub.customerId;
+        }
+      }
+      if (!effectiveCustomerId) {
+        const foundCust = customers.find(c => c.phone === phoneNumber.trim() || c.name.toLowerCase() === userName.trim().toLowerCase());
+        if (foundCust) {
+          effectiveCustomerId = foundCust.id;
+        }
+      }
+
       await sessionService.startSession(
         userName.trim(),
         phoneNumber.trim(),
@@ -313,7 +327,7 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
         whatsappOptIn,
         roomAssignment,
         selectedSubId || undefined,
-        selectedCustomer?.id || undefined,
+        effectiveCustomerId || undefined,
         undefined,
         undefined,
         undefined,

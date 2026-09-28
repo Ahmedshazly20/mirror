@@ -30,13 +30,86 @@ export function formatCurrency(amount: number): string {
   return getCachedCurrencyFormatter('en-EG', 'EGP').format(amount);
 }
 
-export function toMillis(timestamp: any): number {
-  if (!timestamp) return Date.now();
-  if (typeof timestamp === 'number') return timestamp;
-  if (typeof timestamp.toMillis === 'function') return timestamp.toMillis();
-  if (typeof timestamp.seconds === 'number') return timestamp.seconds * 1000;
-  if (timestamp instanceof Date) return timestamp.getTime();
-  return Date.now();
+export function parseTimestampToMillis(timestamp: any): number | null {
+  if (timestamp === undefined || timestamp === null || timestamp === '') return null;
+  if (typeof timestamp === 'number') {
+    return !isNaN(timestamp) && timestamp > 0 ? timestamp : null;
+  }
+  if (typeof timestamp.toMillis === 'function') {
+    try {
+      const ms = timestamp.toMillis();
+      return typeof ms === 'number' && !isNaN(ms) && ms > 0 ? ms : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof timestamp.toDate === 'function') {
+    try {
+      const d = timestamp.toDate();
+      return d instanceof Date && !isNaN(d.getTime()) ? d.getTime() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof timestamp.seconds === 'number') {
+    const ms = timestamp.seconds * 1000 + (timestamp.nanoseconds ? Math.floor(timestamp.nanoseconds / 1000000) : 0);
+    return !isNaN(ms) && ms > 0 ? ms : null;
+  }
+  if (typeof timestamp._seconds === 'number') {
+    const ms = timestamp._seconds * 1000;
+    return !isNaN(ms) && ms > 0 ? ms : null;
+  }
+  if (timestamp instanceof Date) {
+    const ms = timestamp.getTime();
+    return !isNaN(ms) && ms > 0 ? ms : null;
+  }
+  if (typeof timestamp === 'string') {
+    const trimmed = timestamp.trim();
+    if (!trimmed) return null;
+    const num = Number(trimmed);
+    if (!isNaN(num) && num > 0) return num;
+    const parsed = new Date(trimmed).getTime();
+    return !isNaN(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+export function toMillis(timestamp: any, fallback = Date.now()): number {
+  const parsed = parseTimestampToMillis(timestamp);
+  return parsed !== null ? parsed : fallback;
+}
+
+/**
+ * Gets the canonical session start date in milliseconds.
+ * Primary source is session.startTime. Fallback is session.createdAt.
+ * Does NOT use endTime or completedAt.
+ */
+export function getSessionDateMillis(session: any): number | null {
+  if (!session) return null;
+  return parseTimestampToMillis(session.startTime ?? session.createdAt);
+}
+
+export function getSessionTimestamp(session: any): number {
+  const dateMs = getSessionDateMillis(session);
+  return dateMs !== null ? dateMs : Date.now();
+}
+
+/**
+ * Compares whether two timestamps belong to the exact same calendar day in the local timezone.
+ * Returns false if either date is null or invalid.
+ */
+export function isSameCalendarDay(dateA: any, dateB: any): boolean {
+  const msA = parseTimestampToMillis(dateA);
+  const msB = parseTimestampToMillis(dateB);
+  if (msA === null || msB === null) return false;
+
+  const d1 = new Date(msA);
+  const d2 = new Date(msB);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
 }
 
 export function calculateDurationMinutes(startTime: any, endTime?: any): number {

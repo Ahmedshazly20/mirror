@@ -44,6 +44,7 @@ export interface Session {
   userName: string;
   phoneNumber: string;
   customerId?: string;
+  customerNumericId?: number;
   whatsappOptIn?: boolean;
   startTime: any; // Firestore Timestamp
   endTime: any | null; // Firestore Timestamp | null
@@ -76,6 +77,7 @@ export interface Session {
   status: 'active' | 'completed';
   notes: string;
   createdAt: any; // Firestore Timestamp
+  completedAt?: any; // Firestore Timestamp
   roomAssignment?: SessionRoomAssignment;
   subscriptionId?: string;
   deductedHours?: number;
