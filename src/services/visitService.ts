@@ -6,9 +6,10 @@ import {
   onSnapshot, 
   orderBy, 
   getDocs,
-  doc,
-  getDoc,
-  updateDoc
+  doc, 
+  getDoc, 
+  updateDoc,
+  limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Visit } from '../types';
@@ -23,7 +24,8 @@ export const visitService = {
       if (visitData.referenceId) {
         const q = query(
           collection(db, 'visits'), 
-          where('referenceId', '==', visitData.referenceId)
+          where('referenceId', '==', visitData.referenceId),
+          limit(1)
         );
         const existing = await getDocs(q);
         if (!existing.empty) {
@@ -62,8 +64,28 @@ export const visitService = {
     }
   },
 
-  subscribeToVisits(callback: (visits: Visit[]) => void) {
-    const q = query(collection(db, 'visits'), orderBy('date', 'desc'));
+  async getVisitsByCustomerId(customerId: string, limitCount = 20): Promise<Visit[]> {
+    try {
+      const q = query(
+        collection(db, 'visits'),
+        where('customerId', '==', customerId),
+        limit(limitCount)
+      );
+      const snap = await getDocs(q);
+      const visits = snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Visit[];
+      return visits.sort((a, b) => b.date - a.date);
+    } catch (err) {
+      console.warn('Error fetching customer visits:', err);
+      return [];
+    }
+  },
+
+  subscribeToVisits(callback: (visits: Visit[]) => void, limitCount = 30) {
+    const q = query(
+      collection(db, 'visits'), 
+      orderBy('date', 'desc'),
+      limit(limitCount)
+    );
     return onSnapshot(q, (snapshot) => {
       const visits = snapshot.docs.map(doc => ({
         id: doc.id,

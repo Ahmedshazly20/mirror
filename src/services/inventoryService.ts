@@ -10,6 +10,7 @@ import {
   getDocs,
   getDoc,
   where,
+  limit,
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -488,8 +489,12 @@ export const inventoryService = {
     });
   },
 
-  subscribeToMovements(callback: (movements: InventoryMovement[]) => void) {
-    const q = query(collection(db, 'inventoryMovements'), orderBy('createdAt', 'desc'));
+  subscribeToMovements(callback: (movements: InventoryMovement[]) => void, limitCount = 50) {
+    const q = query(
+      collection(db, 'inventoryMovements'), 
+      orderBy('createdAt', 'desc'),
+      limit(limitCount)
+    );
     return onSnapshot(q, (snapshot) => {
       const movements = snapshot.docs.map(doc => ({
         id: doc.id,

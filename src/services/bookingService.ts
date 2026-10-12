@@ -9,7 +9,9 @@ import {
   onSnapshot,
   orderBy,
   Timestamp,
-  getDocs
+  getDocs,
+  where,
+  limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Booking } from '../types';
@@ -33,10 +35,14 @@ export const bookingService = {
       // 2. Check customer overlap (using phone or name in bookings)
       const { useWorkspaceStore } = await import('../store');
       const storeBookings = useWorkspaceStore.getState().bookings;
-      let existingBookings: Booking[] = storeBookings;
-      if (!existingBookings || existingBookings.length === 0) {
+      let existingBookings: Booking[] = storeBookings || [];
+      if (existingBookings.length === 0) {
         const bookingsRef = collection(db, 'bookings');
-        const snapshot = await getDocs(query(bookingsRef));
+        const snapshot = await getDocs(query(
+          bookingsRef,
+          where('status', 'in', ['confirmed', 'active']),
+          limit(50)
+        ));
         existingBookings = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
@@ -140,10 +146,14 @@ export const bookingService = {
 
         const { useWorkspaceStore } = await import('../store');
         const storeBookings = useWorkspaceStore.getState().bookings;
-        let allBookings: Booking[] = storeBookings;
-        if (!allBookings || allBookings.length === 0) {
+        let allBookings: Booking[] = storeBookings || [];
+        if (allBookings.length === 0) {
           const bookingsRef = collection(db, 'bookings');
-          const snapshot = await getDocs(query(bookingsRef));
+          const snapshot = await getDocs(query(
+            bookingsRef,
+            where('status', 'in', ['confirmed', 'active']),
+            limit(50)
+          ));
           allBookings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Booking));
         }
         const otherBookings = allBookings.filter(b => b.id !== id && b.status !== 'cancelled');

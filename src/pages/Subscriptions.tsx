@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   CreditCard, 
   Plus, 
@@ -25,7 +25,15 @@ import {
   History,
   Timer,
   CalendarDays,
-  DoorOpen
+  DoorOpen,
+  Table,
+  LayoutGrid,
+  Filter,
+  RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  ArrowUpDown,
+  RefreshCw
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
@@ -64,10 +72,19 @@ import { Banknote, AlertCircle, Wallet, DollarSign } from 'lucide-react';
 export default function Subscriptions() {
   const { t, i18n } = useTranslation();
   const location = useLocation();
-  const { subscriptions, settings, packages, customers } = useWorkspaceStore();
+  const { subscriptions, setSubscriptions, settings, packages, customers } = useWorkspaceStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // View, Filter, Sort and Pagination States
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  const [tabFilter, setTabFilter] = useState<'all' | 'active' | 'expired' | 'packages' | 'monthly' | 'due'>('all');
+  const [selectedPackageFilter, setSelectedPackageFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'name' | 'balance' | 'expiring' | 'due'>('newest');
+  const [pageSize, setPageSize] = useState<number | 'all'>(20);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   useEffect(() => {
     if (location.state?.openNew) {
@@ -384,43 +401,221 @@ export default function Subscriptions() {
     }
   };
 
-  // Find customer by phone or customerId or name for card display
-  const getCustomerCode = (sub: typeof subscriptions[0]) => {
+  // Precomputed fast lookup maps for customers
+  const customerLookupMaps = useMemo(() => {
+    const byId = new Map<string, Customer>();
+    const byPhone = new Map<string, Customer>();
+    const byNumericId = new Map<number, Customer>();
+    const byName = new Map<string, Customer>();
+
+    (customers || []).forEach(c => {
+      if (c.id) byId.set(c.id, c);
+      if (c.phone) byPhone.set(c.phone.trim(), c);
+      if (c.customerId !== undefined && c.customerId !== null) {
+        byNumericId.set(Number(c.customerId), c);
+      }
+      if (c.name) byName.set(c.name.trim().toLowerCase(), c);
+    });
+
+    return { byId, byPhone, byNumericId, byName };
+  }, [customers]);
+
+  const getCustomerCode = useCallback((sub: Subscription) => {
     if (sub.customerId) {
-      const match = customers.find(c => c.id === sub.customerId);
+      const match = customerLookupMaps.byId.get(sub.customerId);
       if (match) return `#${match.customerId}`;
     }
     if (sub.phoneNumber) {
-      const match = customers.find(c => c.phone === sub.phoneNumber);
+      const match = customerLookupMaps.byPhone.get(sub.phoneNumber.trim());
       if (match) return `#${match.customerId}`;
     }
-    const matchName = customers.find(c => c.name.toLowerCase() === sub.userName.toLowerCase());
-    if (matchName) return `#${matchName.customerId}`;
+    if (sub.userName) {
+      const match = customerLookupMaps.byName.get(sub.userName.trim().toLowerCase());
+      if (match) return `#${match.customerId}`;
+    }
     return null;
-  };
+  }, [customerLookupMaps]);
 
-  const filteredSubs = useMemo(() => {
-    if (!searchTerm.trim()) return subscriptions;
+  const getSubStatus = useCallback((sub: Subscription) => {
+    const endDateObj = sub.endDate ? new Date(sub.endDate) : null;
+    const isExpired = endDateObj ? isAfter(new Date(), endDateObj) : false;
+    const remainingDays = endDateObj ? differenceInCalendarDays(endDateObj, new Date()) : null;
+
+    const remainingMinutes = getSubscriptionRemainingMinutes(sub);
+    const totalMinutes = getSubscriptionTotalMinutes(sub);
+    const isPackage = sub.type === 'package';
+    const isExhausted = isPackage && remainingMinutes <= 0;
+
+    const price = sub.price || 0;
+    const paid = sub.paidAmount !== undefined ? sub.paidAmount : (sub.paymentStatus === 'unpaid' ? 0 : price);
+    const remainingDue = sub.remainingAmount !== undefined ? sub.remainingAmount : Math.max(0, price - paid);
+    const hasDue = remainingDue > 0;
+
+    const isActive = !isExpired && !isExhausted && sub.isActive !== false;
+
+    return {
+      isExpired,
+      remainingDays,
+      remainingMinutes,
+      totalMinutes,
+      isPackage,
+      isExhausted,
+      price,
+      paid,
+      remainingDue,
+      hasDue,
+      isActive,
+      customerCode: getCustomerCode(sub)
+    };
+  }, [getCustomerCode]);
+
+  // Overall Statistics across all subscriptions
+  const subStats = useMemo(() => {
+    let activeCount = 0;
+    let expiredCount = 0;
+    let exhaustedCount = 0;
+    let packagesCount = 0;
+    let monthlyCount = 0;
+    let hasDueCount = 0;
+    let totalDueAmount = 0;
+
+    subscriptions.forEach(sub => {
+      const status = getSubStatus(sub);
+      if (status.isActive) activeCount++;
+      if (status.isExpired) expiredCount++;
+      if (status.isExhausted) exhaustedCount++;
+      if (status.isPackage) packagesCount++;
+      else monthlyCount++;
+      if (status.hasDue) {
+        hasDueCount++;
+        totalDueAmount += status.remainingDue;
+      }
+    });
+
+    return {
+      total: subscriptions.length,
+      activeCount,
+      expiredCount,
+      exhaustedCount,
+      packagesCount,
+      monthlyCount,
+      hasDueCount,
+      totalDueAmount
+    };
+  }, [subscriptions, getSubStatus]);
+
+  // Filtered and Sorted list across ALL subscriptions (Search & filters apply before pagination)
+  const filteredAndSortedSubs = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     const cleanId = term.replace(/^#/, '');
 
-    return subscriptions.filter(sub => {
-      const matchName = sub.userName.toLowerCase().includes(term);
-      const matchPhone = sub.phoneNumber && sub.phoneNumber.includes(term);
-      
-      // Match customer ID
-      let matchId = false;
-      const cust = customers.find(c => 
-        (sub.customerId && c.id === sub.customerId) || 
-        (sub.phoneNumber && c.phone === sub.phoneNumber)
-      );
-      if (cust && (cust.customerId.toString() === cleanId || cust.customerId.toString().includes(cleanId))) {
-        matchId = true;
+    const filtered = subscriptions.filter(sub => {
+      const status = getSubStatus(sub);
+
+      // 1. Tab Status Filter
+      if (tabFilter === 'active' && !status.isActive) return false;
+      if (tabFilter === 'expired' && !status.isExpired) return false;
+      if (tabFilter === 'packages' && !status.isPackage) return false;
+      if (tabFilter === 'monthly' && status.isPackage) return false;
+      if (tabFilter === 'due' && !status.hasDue) return false;
+
+      // 2. Specific Package Filter
+      if (selectedPackageFilter !== 'all') {
+        if (selectedPackageFilter === 'monthly') {
+          if (sub.type === 'package') return false;
+        } else {
+          if (sub.packageId !== selectedPackageFilter) return false;
+        }
       }
 
-      return matchName || matchPhone || matchId;
+      // 3. Search query
+      if (term) {
+        const matchName = sub.userName?.toLowerCase().includes(term);
+        const matchPhone = sub.phoneNumber && sub.phoneNumber.includes(term);
+        const matchCode = status.customerCode && (status.customerCode.toLowerCase().includes(cleanId) || status.customerCode.includes(term));
+        const matchRoom = sub.roomName && sub.roomName.toLowerCase().includes(term);
+
+        const cust = 
+          (sub.customerId && customerLookupMaps.byId.get(sub.customerId)) ||
+          (sub.phoneNumber && customerLookupMaps.byPhone.get(sub.phoneNumber.trim()));
+        const custNumId = cust?.customerId?.toString() || '';
+        const matchCustId = Boolean(custNumId && (custNumId === cleanId || custNumId.includes(cleanId)));
+
+        if (!matchName && !matchPhone && !matchCode && !matchRoom && !matchCustId) {
+          return false;
+        }
+      }
+
+      return true;
     });
-  }, [subscriptions, searchTerm, customers]);
+
+    // Sort
+    filtered.sort((a, b) => {
+      const statusA = getSubStatus(a);
+      const statusB = getSubStatus(b);
+
+      switch (sortBy) {
+        case 'newest': {
+          const aTime = typeof a.createdAt === 'number' ? a.createdAt : (a.startDate || 0);
+          const bTime = typeof b.createdAt === 'number' ? b.createdAt : (b.startDate || 0);
+          return bTime - aTime;
+        }
+        case 'oldest': {
+          const aTime = typeof a.createdAt === 'number' ? a.createdAt : (a.startDate || 0);
+          const bTime = typeof b.createdAt === 'number' ? b.createdAt : (b.startDate || 0);
+          return aTime - bTime;
+        }
+        case 'name':
+          return (a.userName || '').localeCompare(b.userName || '', isRTL ? 'ar' : 'en');
+        case 'balance':
+          return statusB.remainingMinutes - statusA.remainingMinutes;
+        case 'expiring': {
+          const aEnd = a.endDate || 9999999999999;
+          const bEnd = b.endDate || 9999999999999;
+          return aEnd - bEnd;
+        }
+        case 'due':
+          return statusB.remainingDue - statusA.remainingDue;
+        default:
+          return 0;
+      }
+    });
+
+    return filtered;
+  }, [subscriptions, searchTerm, tabFilter, selectedPackageFilter, sortBy, getSubStatus, customerLookupMaps, isRTL]);
+
+  // Reset page when search or filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, tabFilter, selectedPackageFilter, sortBy]);
+
+  // Refresh handler
+  const handleRefreshSubs = async () => {
+    try {
+      setIsRefreshing(true);
+      const all = await subscriptionService.getAllSubscriptions();
+      if (all && all.length > 0) {
+        setSubscriptions(all);
+      }
+      toast.success(isRTL ? 'تم تحديث قائمة المشتركين' : 'Subscribers refreshed');
+    } catch (e) {
+      console.warn('Failed to refresh subscribers:', e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // Paginated View Slice
+  const totalResults = filteredAndSortedSubs.length;
+  const effectivePageSize = pageSize === 'all' ? Math.max(1, totalResults) : Number(pageSize);
+  const totalPages = Math.max(1, Math.ceil(totalResults / effectivePageSize));
+  const validCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedSubs = useMemo(() => {
+    if (pageSize === 'all') return filteredAndSortedSubs;
+    const startIndex = (validCurrentPage - 1) * effectivePageSize;
+    return filteredAndSortedSubs.slice(startIndex, startIndex + effectivePageSize);
+  }, [filteredAndSortedSubs, validCurrentPage, effectivePageSize, pageSize]);
 
   return (
     <div className="space-y-6">
@@ -1174,94 +1369,557 @@ export default function Subscriptions() {
         </div>
       )}
 
-      {/* Subscriptions Search Panel */}
-      <div className="relative max-w-md">
-        <Search className={cn("absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none", isRTL ? 'right-3.5' : 'left-3.5')} />
-        <Input 
-          placeholder={isRTL ? "البحث بالاسم أو رقم الهاتف أو كود العميل (#12)..." : "Search by name, phone, or customer #ID..."}
+      {/* ── Overview Statistics Bar ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 pt-1">
+        <div 
+          onClick={() => setTabFilter('all')}
           className={cn(
-            "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 rounded-xl h-11 font-medium shadow-sm transition-colors duration-200", 
-            isRTL ? 'pr-10' : 'pl-10'
+            "p-4 rounded-2xl border transition-all cursor-pointer select-none",
+            tabFilter === 'all'
+              ? "bg-cyan-500/10 border-cyan-500 shadow-sm"
+              : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
           )}
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{isRTL ? 'إجمالي المشتركين' : 'Total Subscribers'}</span>
+            <User className="w-4 h-4 text-cyan-500" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="text-2xl font-black text-slate-900 dark:text-white font-mono">{subStats.total}</span>
+            <span className="text-[10px] text-slate-400 font-bold">{isRTL ? 'عضو' : 'members'}</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setTabFilter('active')}
+          className={cn(
+            "p-4 rounded-2xl border transition-all cursor-pointer select-none",
+            tabFilter === 'active'
+              ? "bg-emerald-500/10 border-emerald-500 shadow-sm"
+              : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">{isRTL ? 'الاشتراكات النشطة' : 'Active Members'}</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono">{subStats.activeCount}</span>
+            <span className="text-[10px] text-slate-400 font-bold">{isRTL ? 'نشط' : 'active'}</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setTabFilter('expired')}
+          className={cn(
+            "p-4 rounded-2xl border transition-all cursor-pointer select-none",
+            tabFilter === 'expired'
+              ? "bg-rose-500/10 border-rose-500 shadow-sm"
+              : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-rose-600 dark:text-rose-400">{isRTL ? 'المنتهية صلاحيتهم' : 'Expired'}</span>
+            <XCircle className="w-4 h-4 text-rose-500" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono">{subStats.expiredCount}</span>
+            <span className="text-[10px] text-slate-400 font-bold">{isRTL ? 'منتهي' : 'expired'}</span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setTabFilter('packages')}
+          className={cn(
+            "p-4 rounded-2xl border transition-all cursor-pointer select-none",
+            tabFilter === 'packages'
+              ? "bg-purple-500/10 border-purple-500 shadow-sm"
+              : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-purple-600 dark:text-purple-400">{isRTL ? 'باقات الساعات' : 'Hourly Packages'}</span>
+            <Ticket className="w-4 h-4 text-purple-500" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-1.5">
+            <span className="text-2xl font-black text-purple-600 dark:text-purple-400 font-mono">{subStats.packagesCount}</span>
+            <span className="text-[10px] text-slate-400 font-bold">
+              {subStats.exhaustedCount > 0 ? `(${subStats.exhaustedCount} ${isRTL ? 'نفذت' : 'empty'})` : (isRTL ? 'باقة' : 'packages')}
+            </span>
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setTabFilter('due')}
+          className={cn(
+            "p-4 rounded-2xl border transition-all cursor-pointer select-none col-span-2 sm:col-span-1",
+            tabFilter === 'due'
+              ? "bg-amber-500/10 border-amber-500 shadow-sm"
+              : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+          )}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-amber-600 dark:text-amber-400">{isRTL ? 'مستحقات مالية' : 'Due Balances'}</span>
+            <DollarSign className="w-4 h-4 text-amber-500" />
+          </div>
+          <div className="mt-2 flex items-baseline justify-between gap-1">
+            <span className="text-xl font-black text-amber-600 dark:text-amber-400 font-mono">
+              {subStats.hasDueCount} <span className="text-xs font-normal">{isRTL ? 'عميل' : 'due'}</span>
+            </span>
+            <span className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400">
+              {formatCurrency(subStats.totalDueAmount)}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* Existing subscriptions list */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-2">
-        {filteredSubs.map((sub) => {
-          const endDateObj = sub.endDate ? new Date(sub.endDate) : null;
-          const isExpired = endDateObj ? isAfter(new Date(), endDateObj) : false;
-          const remainingDays = endDateObj ? differenceInCalendarDays(endDateObj, new Date()) : null;
-          const customerCode = getCustomerCode(sub);
-
-          return (
-            <Card key={sub.id} className="relative bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 overflow-hidden group hover:shadow-md transition-all duration-300 rounded-[1.75rem]">
-              {/* Colored status wire strip */}
-              <div className={cn("h-1.5 w-full", isExpired ? "bg-rose-500" : "bg-gradient-to-r from-cyan-500 to-purple-500")} />
-              
-              {/* Premium Confirm Delete Inline Overlay */}
-              {deletingId === sub.id && (
-                <div className="absolute inset-0 bg-white/95 dark:bg-slate-950/95 flex flex-col items-center justify-center p-5 text-center z-10 animate-in fade-in duration-200">
-                  <div className="p-3 bg-rose-50 dark:bg-rose-950/20 rounded-full text-rose-500 mb-2.5">
-                    <Trash2 className="w-5.5 h-5.5 animate-bounce" />
-                  </div>
-                  <h4 className="font-extrabold text-[13px] text-slate-900 dark:text-white mb-1">
-                    {isRTL ? 'إلغاء الاشتراك؟' : 'Delete Subscription?'}
-                  </h4>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-4 max-w-[200px] leading-relaxed">
-                    {isRTL 
-                      ? `هل أنت متأكد من رغبتك في حذف اشتراك العميل (${sub.userName}) من قاعدة البيانات؟`
-                      : `Are you sure you want to delete subscription for ${sub.userName}?`}
-                  </p>
-                  <div className="flex gap-2 w-full max-w-[200px]">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="flex-1 rounded-xl text-xs font-bold h-9 border-slate-200 dark:border-slate-800" 
-                      onClick={() => setDeletingId(null)}
-                    >
-                      {isRTL ? 'تراجع' : 'Cancel'}
-                    </Button>
-                    <Button 
-                      variant="destructive" 
-                      size="sm" 
-                      className="flex-1 rounded-xl text-xs font-bold h-9 text-white bg-rose-500 hover:bg-rose-600 border-none" 
-                      onClick={() => {
-                        handleDelete(sub.id);
-                        setDeletingId(null);
-                      }}
-                    >
-                      {isRTL ? 'حذف' : 'Delete'}
-                    </Button>
-                  </div>
-                </div>
+      {/* ── Status Tabs & Search / Filter Controls ── */}
+      <div className="space-y-3 pt-2">
+        {/* Quick Filter Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          {[
+            { id: 'all', label: isRTL ? 'الكل' : 'All', count: subStats.total },
+            { id: 'active', label: isRTL ? 'النشطين' : 'Active', count: subStats.activeCount },
+            { id: 'expired', label: isRTL ? 'المنتهية' : 'Expired', count: subStats.expiredCount },
+            { id: 'packages', label: isRTL ? 'باقات ساعات' : 'Packages', count: subStats.packagesCount },
+            { id: 'monthly', label: isRTL ? 'اشتراكات شهرية' : 'Monthly', count: subStats.monthlyCount },
+            { id: 'due', label: isRTL ? 'عليهم متبقي' : 'Has Due', count: subStats.hasDueCount }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setTabFilter(tab.id as any)}
+              className={cn(
+                "px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 border",
+                tabFilter === tab.id
+                  ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-transparent shadow-sm"
+                  : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200/80 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800"
               )}
+            >
+              <span>{tab.label}</span>
+              <span className={cn(
+                "text-[10px] px-1.5 py-0.2 rounded-md font-mono font-black",
+                tabFilter === tab.id
+                  ? "bg-white/20 dark:bg-slate-900/20 text-white dark:text-slate-900"
+                  : "bg-slate-100 dark:bg-slate-800 text-slate-500"
+              )}>
+                {tab.count}
+              </span>
+            </button>
+          ))}
+        </div>
 
-              <CardContent className="p-5">
-                <div className="flex justify-between items-start gap-2 mb-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={cn(
-                      "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-inner",
-                      isExpired ? "bg-rose-500/10 text-rose-500" : "bg-cyan-500/10 text-cyan-500"
-                    )}>
-                      <User className="w-5 h-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <h3 className="font-extrabold text-sm text-slate-900 dark:text-white truncate">{sub.userName}</h3>
-                        {customerCode && (
-                          <span className="text-[10px] font-black bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 px-1.5 py-0.2 rounded-md font-mono shrink-0">
-                            {customerCode}
+        {/* Search & Actions Bar */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1 max-w-lg">
+            <Search className={cn("absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none", isRTL ? 'right-3.5' : 'left-3.5')} />
+            <Input 
+              placeholder={isRTL ? "البحث بالاسم، رقم الهاتف، كود العميل (#12)، أو الغرفة..." : "Search by name, phone, customer #ID, room..."}
+              className={cn(
+                "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 rounded-xl h-11 font-medium shadow-sm transition-colors", 
+                isRTL ? 'pr-10 pl-9' : 'pl-10 pr-9'
+              )}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className={cn(
+                  "absolute top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200",
+                  isRTL ? 'left-3' : 'right-3'
+                )}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Controls: Package Filter, Sort, View Toggle, Refresh */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Package Filter Select */}
+            <select
+              value={selectedPackageFilter}
+              onChange={(e) => setSelectedPackageFilter(e.target.value)}
+              className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl h-10 px-3 text-xs font-bold text-slate-700 dark:text-slate-300 shadow-sm focus:outline-none"
+            >
+              <option value="all">{isRTL ? 'جميع أنواع الباقات' : 'All Package Types'}</option>
+              <option value="monthly">{isRTL ? 'اشتراك شهري عادي' : 'Monthly Plan'}</option>
+              {packages.map(p => (
+                <option key={p.id} value={p.id}>{p.name} ({p.totalHours}h)</option>
+              ))}
+            </select>
+
+            {/* Sort Select */}
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl h-10 px-3 text-xs font-bold text-slate-700 dark:text-slate-300 shadow-sm focus:outline-none"
+            >
+              <option value="newest">{isRTL ? 'الأحدث تسجيلاً' : 'Newest'}</option>
+              <option value="oldest">{isRTL ? 'الأقدم تسجيلاً' : 'Oldest'}</option>
+              <option value="name">{isRTL ? 'الاسم (أ - ي)' : 'Name (A-Z)'}</option>
+              <option value="balance">{isRTL ? 'الأعلى رصيد ساعات' : 'Remaining Hours'}</option>
+              <option value="expiring">{isRTL ? 'الأقرب انتهاءً' : 'Expiring Soon'}</option>
+              <option value="due">{isRTL ? 'الأعلى متبقي مالي' : 'Highest Due'}</option>
+            </select>
+
+            {/* View Mode Toggle */}
+            <div className="flex items-center bg-slate-100 dark:bg-slate-900 p-0.5 rounded-xl border border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setViewMode('table')}
+                title={isRTL ? 'عرض الجدول' : 'Table View'}
+                className={cn(
+                  "p-2 rounded-lg transition-all",
+                  viewMode === 'table'
+                    ? "bg-white dark:bg-slate-800 text-cyan-600 dark:text-cyan-400 shadow-sm font-bold"
+                    : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                )}
+              >
+                <Table className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('cards')}
+                title={isRTL ? 'عرض البطاقات' : 'Cards View'}
+                className={cn(
+                  "p-2 rounded-lg transition-all",
+                  viewMode === 'cards'
+                    ? "bg-white dark:bg-slate-800 text-cyan-600 dark:text-cyan-400 shadow-sm font-bold"
+                    : "text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                )}
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Refresh Button */}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={handleRefreshSubs}
+              disabled={isRefreshing}
+              title={isRTL ? 'تحديث القائمة' : 'Refresh'}
+              className="h-10 w-10 rounded-xl border-slate-200/80 dark:border-slate-800 text-slate-500 hover:text-cyan-600"
+            >
+              <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin text-cyan-500")} />
+            </Button>
+          </div>
+        </div>
+
+        {/* Results Counter and Active Filter Reset */}
+        <div className="flex items-center justify-between text-xs font-semibold text-slate-500 px-1 pt-1">
+          <div>
+            {isRTL ? (
+              <span>
+                عرض <strong className="text-slate-900 dark:text-white font-mono">{paginatedSubs.length}</strong> من إجمالي <strong className="text-slate-900 dark:text-white font-mono">{totalResults}</strong> مشترك مطابق
+                {subscriptions.length !== totalResults && (
+                  <span className="text-slate-400"> (من أصل {subscriptions.length} مشترك مسجل)</span>
+                )}
+              </span>
+            ) : (
+              <span>
+                Showing <strong className="text-slate-900 dark:text-white font-mono">{paginatedSubs.length}</strong> of <strong className="text-slate-900 dark:text-white font-mono">{totalResults}</strong> matching members
+                {subscriptions.length !== totalResults && (
+                  <span className="text-slate-400"> (out of {subscriptions.length} total)</span>
+                )}
+              </span>
+            )}
+          </div>
+
+          {(searchTerm || tabFilter !== 'all' || selectedPackageFilter !== 'all') && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm('');
+                setTabFilter('all');
+                setSelectedPackageFilter('all');
+              }}
+              className="text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 text-[11px] font-bold"
+            >
+              <RotateCcw className="w-3 h-3" />
+              {isRTL ? 'إعادة تعيين الفلاتر' : 'Reset Filters'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── View 1: High-Density Table View ── */}
+      {viewMode === 'table' && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-start text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50/75 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-bold">
+                  <th className="py-3.5 px-4 text-start font-black">{isRTL ? 'العميل' : 'Member'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'الهاتف' : 'Phone'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'نوع الاشتراك والغرفة' : 'Plan & Room'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'الصلاحية والتواريخ' : 'Validity & Dates'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'رصيد الساعات' : 'Hours Balance'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'الحالة' : 'Status'}</th>
+                  <th className="py-3.5 px-3 text-start font-black">{isRTL ? 'الموقف المالي' : 'Financials'}</th>
+                  <th className="py-3.5 px-4 text-end font-black">{isRTL ? 'إجراءات' : 'Actions'}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-medium">
+                {paginatedSubs.map(sub => {
+                  const status = getSubStatus(sub);
+                  return (
+                    <tr key={sub.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors group">
+                      {/* Customer Name & Code */}
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2.5">
+                          <div className={cn(
+                            "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 font-black text-xs",
+                            status.isExpired 
+                              ? "bg-rose-500/10 text-rose-500" 
+                              : "bg-cyan-500/10 text-cyan-500"
+                          )}>
+                            <User className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-900 dark:text-white truncate">{sub.userName}</span>
+                              {status.customerCode && (
+                                <span className="text-[10px] font-black bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 px-1.5 py-0.2 rounded-md font-mono shrink-0">
+                                  {status.customerCode}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Phone */}
+                      <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-400 text-[11px]">
+                        {sub.phoneNumber || '---'}
+                      </td>
+
+                      {/* Plan Type & Room */}
+                      <td className="py-3 px-3">
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded-md text-[10px] font-black tracking-wide border",
+                            status.isPackage
+                              ? "bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 border-purple-200/60 dark:border-purple-900/40"
+                              : "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-300 border-cyan-200/60 dark:border-cyan-900/40"
+                          )}>
+                            {status.isPackage ? t('subs.package') : t('subs.monthly')}
+                          </span>
+                          <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                            <DoorOpen className="w-3 h-3 text-slate-400" />
+                            {sub.roomName || 'Shared Space'}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Validity Period & Remaining Days */}
+                      <td className="py-3 px-3">
+                        <div className="text-[11px] space-y-0.5">
+                          <p className="font-mono text-slate-700 dark:text-slate-300 font-bold">
+                            {format(new Date(sub.startDate), 'MMM dd', { locale: dateLocale })} - {sub.endDate ? format(new Date(sub.endDate), 'MMM dd, yyyy', { locale: dateLocale }) : '---'}
+                          </p>
+                          {status.remainingDays !== null && (
+                            <span className={cn(
+                              "text-[10px] font-black inline-flex items-center gap-1 px-1.5 py-0.2 rounded",
+                              status.isExpired
+                                ? "text-rose-600 dark:text-rose-400 bg-rose-500/10"
+                                : status.remainingDays <= 3
+                                  ? "text-amber-600 dark:text-amber-400 bg-amber-500/10"
+                                  : "text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800"
+                            )}>
+                              <Timer className="w-3 h-3" />
+                              {status.isExpired 
+                                ? (isRTL ? `منتهي منذ ${Math.abs(status.remainingDays)} يوم` : `Expired ${Math.abs(status.remainingDays)}d ago`)
+                                : (isRTL ? `باقي ${status.remainingDays} يوم` : `${status.remainingDays}d left`)}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Hours Balance (Packages) */}
+                      <td className="py-3 px-3">
+                        {status.isPackage ? (
+                          <div className="space-y-1 min-w-[110px]">
+                            <div className="flex items-center justify-between text-[11px] font-black font-mono">
+                              <span className={cn(
+                                status.isExhausted ? "text-rose-500" : "text-purple-600 dark:text-purple-400"
+                              )}>
+                                {formatPackageBalance(status.remainingMinutes)}
+                              </span>
+                              <span className="text-slate-400 text-[10px]">
+                                / {formatPackageBalance(status.totalMinutes)}
+                              </span>
+                            </div>
+                            {(() => {
+                              const pct = status.totalMinutes > 0 ? (status.remainingMinutes / status.totalMinutes) * 100 : 0;
+                              return <Progress value={pct} className="h-1.5 bg-slate-100 dark:bg-slate-800" />;
+                            })()}
+                          </div>
+                        ) : (
+                          <span className="text-[11px] font-bold text-slate-400">
+                            {isRTL ? 'غير محدود' : 'Unlimited'}
                           </span>
                         )}
-                      </div>
-                      <p className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400">{sub.phoneNumber || '---'}</p>
+                      </td>
+
+                      {/* Status Badge */}
+                      <td className="py-3 px-3">
+                        {status.isExpired ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black text-rose-600 dark:text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-md">
+                            <XCircle className="w-3 h-3" /> {t('subs.expired')}
+                          </span>
+                        ) : status.isExhausted ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md">
+                            <Clock className="w-3 h-3" /> {isRTL ? 'نفذت الساعات' : 'Out of Hours'}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
+                            <CheckCircle2 className="w-3 h-3" /> {t('subs.active')}
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Financials: Price, Paid, Due */}
+                      <td className="py-3 px-3 font-mono">
+                        <div className="space-y-0.5 text-[11px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-slate-400 text-[10px]">{isRTL ? 'سعر:' : 'Price:'}</span>
+                            <span className="font-bold text-slate-900 dark:text-white">{status.price} {t('common.currency')}</span>
+                          </div>
+                          {status.hasDue ? (
+                            <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-black text-[10px] bg-amber-500/10 px-1.5 py-0.2 rounded w-fit">
+                              <AlertCircle className="w-3 h-3 shrink-0" />
+                              <span>{isRTL ? 'متبقي: ' : 'Due: '}{status.remainingDue} {t('common.currency')}</span>
+                            </div>
+                          ) : (
+                            <span className="text-emerald-600 dark:text-emerald-400 text-[10px] font-bold flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              {isRTL ? 'مسدد بالكامل' : 'Paid'}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-3 px-4 text-end">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {status.hasDue && (
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setPayingSub(sub);
+                                setCollectAmount(`${status.remainingDue}`);
+                                setCollectMethod('cash');
+                              }}
+                              className="h-7 px-2 text-[11px] font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg shadow-sm"
+                            >
+                              <DollarSign className="w-3 h-3 mr-0.5" />
+                              {isRTL ? 'تحصيل' : 'Collect'}
+                            </Button>
+                          )}
+
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setDeletingId(sub.id)}
+                            className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-500/10 rounded-lg"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── View 2: Cards Grid View ── */}
+      {viewMode === 'cards' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-1">
+          {paginatedSubs.map((sub) => {
+            const status = getSubStatus(sub);
+
+            return (
+              <Card key={sub.id} className="relative bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 overflow-hidden group hover:shadow-md transition-all duration-300 rounded-[1.75rem]">
+                {/* Colored status wire strip */}
+                <div className={cn(
+                  "h-1.5 w-full", 
+                  status.isExpired 
+                    ? "bg-rose-500" 
+                    : status.isExhausted 
+                      ? "bg-amber-500" 
+                      : "bg-gradient-to-r from-cyan-500 to-purple-500"
+                )} />
+                
+                {/* Confirm Delete Inline Overlay */}
+                {deletingId === sub.id && (
+                  <div className="absolute inset-0 bg-white/95 dark:bg-slate-950/95 flex flex-col items-center justify-center p-5 text-center z-10 animate-in fade-in duration-200">
+                    <div className="p-3 bg-rose-50 dark:bg-rose-950/20 rounded-full text-rose-500 mb-2.5">
+                      <Trash2 className="w-5.5 h-5.5 animate-bounce" />
+                    </div>
+                    <h4 className="font-extrabold text-[13px] text-slate-900 dark:text-white mb-1">
+                      {isRTL ? 'إلغاء الاشتراك؟' : 'Delete Subscription?'}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-4 max-w-[200px] leading-relaxed">
+                      {isRTL 
+                        ? `هل أنت متأكد من رغبتك في حذف اشتراك العميل (${sub.userName}) من قاعدة البيانات؟`
+                        : `Are you sure you want to delete subscription for ${sub.userName}?`}
+                    </p>
+                    <div className="flex gap-2 w-full max-w-[200px]">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="flex-1 rounded-xl text-xs font-bold h-9 border-slate-200 dark:border-slate-800" 
+                        onClick={() => setDeletingId(null)}
+                      >
+                        {isRTL ? 'تراجع' : 'Cancel'}
+                      </Button>
+                      <Button 
+                        variant="destructive" 
+                        size="sm" 
+                        className="flex-1 rounded-xl text-xs font-bold h-9 text-white bg-rose-500 hover:bg-rose-600 border-none" 
+                        onClick={() => {
+                          handleDelete(sub.id);
+                          setDeletingId(null);
+                        }}
+                      >
+                        {isRTL ? 'حذف' : 'Delete'}
+                      </Button>
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-1">
+                )}
+
+                <CardContent className="p-5">
+                  <div className="flex justify-between items-start gap-2 mb-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={cn(
+                        "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-inner",
+                        status.isExpired ? "bg-rose-500/10 text-rose-500" : "bg-cyan-500/10 text-cyan-500"
+                      )}>
+                        <User className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="font-extrabold text-sm text-slate-900 dark:text-white truncate">{sub.userName}</h3>
+                          {status.customerCode && (
+                            <span className="text-[10px] font-black bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 px-1.5 py-0.2 rounded-md font-mono shrink-0">
+                              {status.customerCode}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400">{sub.phoneNumber || '---'}</p>
+                      </div>
+                    </div>
+                    
                     <Button 
                       variant="ghost" 
                       size="icon" 
@@ -1271,166 +1929,233 @@ export default function Subscriptions() {
                       <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
-                </div>
 
-                {/* Validity Badge & Status */}
-                <div className="flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80 mb-3">
-                  <div className="flex items-center gap-1.5">
-                    {isExpired ? (
-                      <span className="flex items-center gap-1 text-[10px] font-black text-rose-500 uppercase tracking-wide">
-                        <XCircle className="w-3.5 h-3.5" /> {t('subs.expired')}
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-[10px] font-black text-emerald-500 uppercase tracking-wide">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> {t('subs.active')}
+                  {/* Validity Badge & Status */}
+                  <div className="flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-100 dark:border-slate-800/80 mb-3">
+                    <div className="flex items-center gap-1.5">
+                      {status.isExpired ? (
+                        <span className="flex items-center gap-1 text-[10px] font-black text-rose-500 uppercase tracking-wide">
+                          <XCircle className="w-3.5 h-3.5" /> {t('subs.expired')}
+                        </span>
+                      ) : status.isExhausted ? (
+                        <span className="flex items-center gap-1 text-[10px] font-black text-amber-500 uppercase tracking-wide">
+                          <Clock className="w-3.5 h-3.5" /> {isRTL ? 'نفذت الساعات' : 'Out of Hours'}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[10px] font-black text-emerald-500 uppercase tracking-wide">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> {t('subs.active')}
+                        </span>
+                      )}
+                    </div>
+
+                    {status.remainingDays !== null && (
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1",
+                        status.isExpired 
+                          ? "bg-rose-500/10 text-rose-600 dark:text-rose-400" 
+                          : status.remainingDays <= 3 
+                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 animate-pulse" 
+                            : "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400"
+                      )}>
+                        <Timer className="w-3 h-3" />
+                        {status.isExpired 
+                          ? (isRTL ? `منتهي منذ ${Math.abs(status.remainingDays)} يوم` : `Expired ${Math.abs(status.remainingDays)}d ago`)
+                          : status.remainingDays === 0
+                            ? (isRTL ? 'ينتهي اليوم!' : 'Expires Today!')
+                            : (isRTL ? `باقي ${status.remainingDays} يوم` : `${status.remainingDays} days left`)}
                       </span>
                     )}
                   </div>
 
-                  {remainingDays !== null && (
-                    <span className={cn(
-                      "text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1",
-                      isExpired 
-                        ? "bg-rose-500/10 text-rose-600 dark:text-rose-400" 
-                        : remainingDays <= 3 
-                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 animate-pulse" 
-                          : "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400"
-                    )}>
-                      <Timer className="w-3 h-3" />
-                      {isExpired 
-                        ? (isRTL ? `منتهي منذ ${Math.abs(remainingDays)} يوم` : `Expired ${Math.abs(remainingDays)}d ago`)
-                        : remainingDays === 0
-                          ? (isRTL ? 'ينتهي اليوم!' : 'Expires Today!')
-                          : (isRTL ? `باقي ${remainingDays} يوم` : `${remainingDays} days left`)}
-                    </span>
-                  )}
-                </div>
-
-                <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
-                    <span>{t('subs.type')}</span>
-                    <span className={cn(
-                      "px-2.5 py-0.5 rounded-full text-[11px] font-bold border tracking-wide shadow-inner",
-                      sub.type === 'package'
-                        ? "bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 border-purple-100/80 dark:border-purple-900/30"
-                        : "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-300 border-cyan-100/80 dark:border-cyan-900/30"
-                    )}>
-                      {sub.type === 'package' ? t('subs.package') : t('subs.monthly')}
-                    </span>
-                  </div>
-
-                  {/* Linked Room */}
-                  <div className="flex items-center justify-between text-xs font-bold pt-0.5">
-                    <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'الغرفة المخصصة' : 'Assigned Room'}</span>
-                    <Badge variant="outline" className="bg-purple-500/10 text-purple-600 dark:text-purple-300 border-purple-200/50 font-bold text-[11px] px-2 py-0.5 flex items-center gap-1">
-                      <DoorOpen className="w-3 h-3 text-purple-500" />
-                      <span>{sub.roomName || 'Shared Space'}</span>
-                    </Badge>
-                  </div>
-                  
-                  {sub.type === 'package' && (
-                    <div className="space-y-2 pt-1">
-                      <div className="flex justify-between text-[11px] font-bold">
-                        <span className="text-slate-500 dark:text-slate-400">{t('subs.remainingHours')}</span>
-                        <span className="text-purple-600 dark:text-purple-400 font-extrabold">
-                          {formatPackageBalance(getSubscriptionRemainingMinutes(sub))} / {formatPackageBalance(getSubscriptionTotalMinutes(sub))}
-                        </span>
-                      </div>
-                      {(() => {
-                        const remM = getSubscriptionRemainingMinutes(sub);
-                        const totM = getSubscriptionTotalMinutes(sub);
-                        const pct = totM > 0 ? (remM / totM) * 100 : 0;
-                        return <Progress value={pct} className="h-1.5 bg-slate-100 dark:bg-slate-800" />;
-                      })()}
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between text-xs font-bold pt-0.5">
-                    <span className="text-slate-500 dark:text-slate-400">{t('subs.period')}</span>
-                    <span className="text-slate-800 dark:text-slate-300 font-mono text-[11px]">
-                      {format(new Date(sub.startDate), 'MMM dd', { locale: dateLocale })} - {sub.endDate ? format(new Date(sub.endDate), 'MMM dd, yyyy', { locale: dateLocale }) : '---'}
-                    </span>
-                  </div>
-
-                  {sub.validityDays && (
-                    <div className="flex items-center justify-between text-xs font-bold pt-0.5">
-                      <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'مدة الصلاحية' : 'Validity Duration'}</span>
-                      <span className="text-slate-700 dark:text-slate-300 font-bold">
-                        {sub.validityDays} {isRTL ? 'يوم' : 'Days'}
+                  <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+                      <span>{t('subs.type')}</span>
+                      <span className={cn(
+                        "px-2.5 py-0.5 rounded-full text-[11px] font-bold border tracking-wide shadow-inner",
+                        status.isPackage
+                          ? "bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-300 border-purple-100/80 dark:border-purple-900/30"
+                          : "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-300 border-cyan-100/80 dark:border-cyan-900/30"
+                      )}>
+                        {status.isPackage ? t('subs.package') : t('subs.monthly')}
                       </span>
                     </div>
-                  )}
-                  
-                  {/* Financial Settlement & Revenue Breakdown */}
-                  {(() => {
-                    const price = sub.price || 0;
-                    const paid = sub.paidAmount !== undefined ? sub.paidAmount : (sub.paymentStatus === 'unpaid' ? 0 : price);
-                    const remaining = sub.remainingAmount !== undefined ? sub.remainingAmount : Math.max(0, price - paid);
-                    const isFullyPaid = remaining === 0;
 
-                    return (
-                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
-                        <div className="flex items-center justify-between text-xs font-bold">
-                          <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'سعر الاشتراك' : 'Subscription Price'}</span>
-                          <span className="text-slate-800 dark:text-slate-200 font-black font-mono">
-                            {price} {t('common.currency')}
+                    {/* Linked Room */}
+                    <div className="flex items-center justify-between text-xs font-bold pt-0.5">
+                      <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'الغرفة المخصصة' : 'Assigned Room'}</span>
+                      <Badge variant="outline" className="bg-purple-500/10 text-purple-600 dark:text-purple-300 border-purple-200/50 font-bold text-[11px] px-2 py-0.5 flex items-center gap-1">
+                        <DoorOpen className="w-3 h-3 text-purple-500" />
+                        <span>{sub.roomName || 'Shared Space'}</span>
+                      </Badge>
+                    </div>
+                    
+                    {status.isPackage && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex justify-between text-[11px] font-bold">
+                          <span className="text-slate-500 dark:text-slate-400">{t('subs.remainingHours')}</span>
+                          <span className={cn(
+                            "font-extrabold font-mono",
+                            status.isExhausted ? "text-rose-500" : "text-purple-600 dark:text-purple-400"
+                          )}>
+                            {formatPackageBalance(status.remainingMinutes)} / {formatPackageBalance(status.totalMinutes)}
                           </span>
                         </div>
-
-                        <div className="flex items-center justify-between text-[11px] font-bold">
-                          <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                            <CheckCircle className="w-3 h-3" />
-                            {isRTL ? 'المسدد (Revenue Received)' : 'Paid'}
-                          </span>
-                          <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">
-                            {paid} {t('common.currency')}
-                          </span>
-                        </div>
-
-                        {!isFullyPaid ? (
-                          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-2">
-                            <div>
-                              <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400">{isRTL ? 'متبقي مستحق (Due)' : 'Outstanding Due'}</p>
-                              <p className="text-xs font-black font-mono text-amber-700 dark:text-amber-300">{remaining} {t('common.currency')}</p>
-                            </div>
-                            <Button
-                              size="sm"
-                              onClick={() => {
-                                setPayingSub(sub);
-                                setCollectAmount(`${remaining}`);
-                                setCollectMethod('cash');
-                              }}
-                              className="h-7 px-2.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg shadow-sm"
-                            >
-                              <DollarSign className="w-3 h-3 mr-0.5" />
-                              {isRTL ? 'تحصيل' : 'Collect'}
-                            </Button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/5 px-2.5 py-1 rounded-lg border border-emerald-500/10">
-                            <span>{isRTL ? 'الحالة المالية' : 'Payment Status'}</span>
-                            <span className="flex items-center gap-1">
-                              <Check className="w-3 h-3" />
-                              {isRTL ? 'مسدد بالكامل' : 'Fully Paid'}
-                            </span>
-                          </div>
-                        )}
+                        {(() => {
+                          const pct = status.totalMinutes > 0 ? (status.remainingMinutes / status.totalMinutes) * 100 : 0;
+                          return <Progress value={pct} className="h-1.5 bg-slate-100 dark:bg-slate-800" />;
+                        })()}
                       </div>
-                    );
-                  })()}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+                    )}
 
-        {filteredSubs.length === 0 && (
-          <div className="col-span-full py-20 text-center text-slate-500 bg-white dark:bg-slate-900/30 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2rem]">
-            <CreditCard className="w-12 h-12 mx-auto mb-4 opacity-20 text-slate-400" />
-            <p className="font-bold text-sm">{t('subs.noSubs')}</p>
+                    <div className="flex items-center justify-between text-xs font-bold pt-0.5">
+                      <span className="text-slate-500 dark:text-slate-400">{t('subs.period')}</span>
+                      <span className="text-slate-800 dark:text-slate-300 font-mono text-[11px]">
+                        {format(new Date(sub.startDate), 'MMM dd', { locale: dateLocale })} - {sub.endDate ? format(new Date(sub.endDate), 'MMM dd, yyyy', { locale: dateLocale }) : '---'}
+                      </span>
+                    </div>
+
+                    {sub.validityDays && (
+                      <div className="flex items-center justify-between text-xs font-bold pt-0.5">
+                        <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'مدة الصلاحية' : 'Validity Duration'}</span>
+                        <span className="text-slate-700 dark:text-slate-300 font-bold">
+                          {sub.validityDays} {isRTL ? 'يوم' : 'Days'}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Financial Settlement & Revenue Breakdown */}
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold">
+                        <span className="text-slate-500 dark:text-slate-400">{isRTL ? 'سعر الاشتراك' : 'Subscription Price'}</span>
+                        <span className="text-slate-800 dark:text-slate-200 font-black font-mono">
+                          {status.price} {t('common.currency')}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] font-bold">
+                        <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" />
+                          {isRTL ? 'المسدد' : 'Paid'}
+                        </span>
+                        <span className="font-mono text-emerald-600 dark:text-emerald-400 font-black">
+                          {status.paid} {t('common.currency')}
+                        </span>
+                      </div>
+
+                      {status.hasDue ? (
+                        <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400">{isRTL ? 'متبقي مستحق (Due)' : 'Outstanding Due'}</p>
+                            <p className="text-xs font-black font-mono text-amber-700 dark:text-amber-300">{status.remainingDue} {t('common.currency')}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setPayingSub(sub);
+                              setCollectAmount(`${status.remainingDue}`);
+                              setCollectMethod('cash');
+                            }}
+                            className="h-7 px-2.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg shadow-sm"
+                          >
+                            <DollarSign className="w-3 h-3 mr-0.5" />
+                            {isRTL ? 'تحصيل' : 'Collect'}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/5 px-2.5 py-1 rounded-lg border border-emerald-500/10">
+                          <span>{isRTL ? 'الحالة المالية' : 'Payment Status'}</span>
+                          <span className="flex items-center gap-1">
+                            <Check className="w-3 h-3" />
+                            {isRTL ? 'مسدد بالكامل' : 'Fully Paid'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Empty State ── */}
+      {paginatedSubs.length === 0 && (
+        <div className="py-20 text-center text-slate-500 bg-white dark:bg-slate-900/30 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2rem] space-y-3">
+          <CreditCard className="w-12 h-12 mx-auto opacity-20 text-slate-400" />
+          <p className="font-bold text-sm text-slate-700 dark:text-slate-300">{t('subs.noSubs')}</p>
+          {(searchTerm || tabFilter !== 'all' || selectedPackageFilter !== 'all') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSearchTerm('');
+                setTabFilter('all');
+                setSelectedPackageFilter('all');
+              }}
+              className="rounded-xl font-bold text-xs"
+            >
+              <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
+              {isRTL ? 'مسح الفلاتر والبحث' : 'Clear Filters & Search'}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* ── Pagination Controls ── */}
+      {totalResults > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-3 px-2 border-t border-slate-200/80 dark:border-slate-800 text-xs text-slate-500">
+          {/* Page size selector */}
+          <div className="flex items-center gap-2">
+            <span>{isRTL ? 'عرض في الصفحة:' : 'Items per page:'}</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                const val = e.target.value === 'all' ? 'all' : Number(e.target.value);
+                setPageSize(val);
+                setCurrentPage(1);
+              }}
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg h-8 px-2 text-xs font-bold font-mono focus:outline-none"
+            >
+              <option value={15}>15</option>
+              <option value={30}>30</option>
+              <option value={60}>60</option>
+              <option value="all">{isRTL ? 'الكل' : 'All'}</option>
+            </select>
           </div>
-        )}
-      </div>
+
+          {/* Navigation */}
+          {pageSize !== 'all' && totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={validCurrentPage <= 1}
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                className="h-8 rounded-lg px-2.5 font-bold text-xs"
+              >
+                <ChevronRight className={cn("w-3.5 h-3.5", isRTL ? "" : "rotate-180")} />
+                <span>{isRTL ? 'السابق' : 'Prev'}</span>
+              </Button>
+
+              <span className="font-mono font-bold px-2 text-slate-800 dark:text-slate-200">
+                {validCurrentPage} / {totalPages}
+              </span>
+
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={validCurrentPage >= totalPages}
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                className="h-8 rounded-lg px-2.5 font-bold text-xs"
+              >
+                <span>{isRTL ? 'التالي' : 'Next'}</span>
+                <ChevronLeft className={cn("w-3.5 h-3.5", isRTL ? "" : "rotate-180")} />
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Collect Due Payment Dialog */}
       <Dialog open={!!payingSub} onOpenChange={(open) => !open && setPayingSub(null)}>

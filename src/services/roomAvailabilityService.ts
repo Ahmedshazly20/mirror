@@ -1,4 +1,4 @@
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Booking, Session } from '../types';
 import { toMillis } from '../lib/utils-workspace';
@@ -210,14 +210,33 @@ export async function checkRoomConflictInFirestore(
   }
 
   try {
-    // 1. Fetch bookings
+    // 1. Check in-memory store first (Zero reads)
+    try {
+      const { useWorkspaceStore } = await import('../store');
+      const storeState = useWorkspaceStore.getState();
+      const memBookings = storeState.bookings;
+      const memSessions = storeState.sessions;
+
+      if (memBookings && memBookings.length > 0) {
+        return checkRoomConflictInMemory(roomId, startTime, endTime, memBookings, memSessions || [], options);
+      }
+    } catch (_) {}
+
+    // 2. Targeted fallback queries if memory is empty
     const bookingsRef = collection(db, 'bookings');
-    const bookingsSnap = await getDocs(query(bookingsRef));
+    const bookingsSnap = await getDocs(query(
+      bookingsRef,
+      where('status', 'in', ['confirmed', 'active']),
+      limit(50)
+    ));
     const allBookings = bookingsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Booking[];
 
-    // 2. Fetch active sessions
     const sessionsRef = collection(db, 'sessions');
-    const sessionsSnap = await getDocs(query(sessionsRef, where('status', '==', 'active')));
+    const sessionsSnap = await getDocs(query(
+      sessionsRef, 
+      where('status', '==', 'active'),
+      limit(50)
+    ));
     const allSessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Session[];
 
     return checkRoomConflictInMemory(roomId, startTime, endTime, allBookings, allSessions, options);

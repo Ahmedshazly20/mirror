@@ -4,11 +4,13 @@ import {
   updateDoc, 
   deleteDoc, 
   doc, 
+  getDoc,
   query, 
   onSnapshot, 
   orderBy, 
   getDocs,
   where,
+  limit,
   Timestamp 
 } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -17,9 +19,13 @@ import { cleanData } from '../lib/utils';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 
 export const customerService = {
-  async getCustomers(): Promise<Customer[]> {
+  async getCustomers(limitCount = 100): Promise<Customer[]> {
     try {
-      const q = query(collection(db, 'customers'), orderBy('customerId', 'asc'));
+      const q = query(
+        collection(db, 'customers'), 
+        orderBy('updatedAt', 'desc'), 
+        limit(limitCount)
+      );
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Customer[];
     } catch (error) {
@@ -31,9 +37,9 @@ export const customerService = {
   async getCustomerById(id: string): Promise<Customer | null> {
     try {
       const docRef = doc(db, 'customers', id);
-      const snapshot = await getDocs(query(collection(db, 'customers'), where('__name__', '==', id)));
-      if (!snapshot.empty) {
-        return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Customer;
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        return { id: snap.id, ...snap.data() } as Customer;
       }
       return null;
     } catch (error) {
@@ -42,24 +48,88 @@ export const customerService = {
     }
   },
 
+  /**
+   * Optimized O(1) read for the highest customer ID instead of reading the entire collection.
+   */
   async getNextCustomerId(): Promise<number> {
     try {
-      const snapshot = await getDocs(collection(db, 'customers'));
+      const q = query(
+        collection(db, 'customers'), 
+        orderBy('customerId', 'desc'), 
+        limit(1)
+      );
+      const snapshot = await getDocs(q);
       if (snapshot.empty) return 1;
-      let maxId = 0;
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        if (data.customerId && typeof data.customerId === 'number') {
-          if (data.customerId > maxId) maxId = data.customerId;
-        } else if (data.customerId && !isNaN(Number(data.customerId))) {
-          const num = Number(data.customerId);
-          if (num > maxId) maxId = num;
-        }
-      });
-      return maxId + 1;
+      const topCust = snapshot.docs[0].data();
+      const topId = Number(topCust.customerId);
+      return !isNaN(topId) && topId > 0 ? topId + 1 : 1;
     } catch (error) {
       console.error('Error generating next customerId:', error);
-      return Date.now() % 100000;
+      return Math.floor(Date.now() / 1000) % 100000;
+    }
+  },
+
+  /**
+   * On-demand search for customers using limited targeted queries.
+   */
+  async searchCustomers(searchTerm: string, limitCount = 8): Promise<Customer[]> {
+    if (!searchTerm || !searchTerm.trim()) return [];
+    const term = searchTerm.trim();
+    const cleanTerm = term.replace(/^#/, '');
+    const numId = Number(cleanTerm);
+    const resultsMap = new Map<string, Customer>();
+
+    try {
+      // 1. If numeric, search by customerId
+      if (!isNaN(numId) && numId > 0) {
+        const idQ = query(
+          collection(db, 'customers'),
+          where('customerId', '==', numId),
+          limit(limitCount)
+        );
+        const idSnap = await getDocs(idQ);
+        idSnap.docs.forEach(d => resultsMap.set(d.id, { id: d.id, ...d.data() } as Customer));
+      }
+
+      // 2. Search by phone match if space available
+      if (cleanTerm.length >= 3 && resultsMap.size < limitCount) {
+        const phoneQ = query(
+          collection(db, 'customers'),
+          where('phone', '>=', cleanTerm),
+          where('phone', '<=', cleanTerm + '\uf8ff'),
+          limit(limitCount - resultsMap.size)
+        );
+        const phoneSnap = await getDocs(phoneQ);
+        phoneSnap.docs.forEach(d => resultsMap.set(d.id, { id: d.id, ...d.data() } as Customer));
+      }
+
+      // 3. Fallback recent scan if not enough results
+      if (resultsMap.size < limitCount) {
+        const fallbackQ = query(
+          collection(db, 'customers'),
+          orderBy('updatedAt', 'desc'),
+          limit(30)
+        );
+        const fallbackSnap = await getDocs(fallbackQ);
+        const termLower = term.toLowerCase();
+        fallbackSnap.docs.forEach(d => {
+          if (resultsMap.size >= limitCount) return;
+          const c = { id: d.id, ...d.data() } as Customer;
+          if (
+            c.customerId?.toString().includes(cleanTerm) ||
+            c.name?.toLowerCase().includes(termLower) ||
+            c.phone?.includes(cleanTerm) ||
+            (c.email && c.email.toLowerCase().includes(termLower))
+          ) {
+            resultsMap.set(d.id, c);
+          }
+        });
+      }
+
+      return Array.from(resultsMap.values()).slice(0, limitCount);
+    } catch (e) {
+      console.warn('Error searching customers:', e);
+      return [];
     }
   },
 
@@ -68,7 +138,7 @@ export const customerService = {
       // Check phone duplicate
       const phone = customerData.phone.trim();
       if (phone) {
-        const phoneQuery = query(collection(db, 'customers'), where('phone', '==', phone));
+        const phoneQuery = query(collection(db, 'customers'), where('phone', '==', phone), limit(1));
         const phoneSnap = await getDocs(phoneQuery);
         if (!phoneSnap.empty) {
           const existing = { id: phoneSnap.docs[0].id, ...phoneSnap.docs[0].data() } as Customer;
@@ -217,8 +287,12 @@ export const customerService = {
     }
   },
 
-  subscribeToCustomers(callback: (customers: Customer[]) => void) {
-    const q = query(collection(db, 'customers'), orderBy('customerId', 'asc'));
+  subscribeToCustomers(callback: (customers: Customer[]) => void, limitCount = 50) {
+    const q = query(
+      collection(db, 'customers'), 
+      orderBy('updatedAt', 'desc'),
+      limit(limitCount)
+    );
     return onSnapshot(q, (snapshot) => {
       const customers = snapshot.docs.map(doc => ({
         id: doc.id,

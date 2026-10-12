@@ -136,19 +136,48 @@ export const subscriptionService = {
   },
 
   subscribeToSubscriptions(callback: (subs: Subscription[]) => void) {
-    const q = query(
-      collection(db, 'subscriptions'),
-      orderBy('createdAt', 'desc')
-    );
+    // Query full collection without orderBy constraint so documents missing 'createdAt'
+    // are NOT dropped by Firestore.
+    const subsCollection = collection(db, 'subscriptions');
     
-    return onSnapshot(q, (snapshot) => {
+    return onSnapshot(subsCollection, (snapshot) => {
       const subs = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as Subscription[];
+      
+      // Memory sort: safely handles createdAt, startDate, or 0
+      subs.sort((a, b) => {
+        const aTime = typeof a.createdAt === 'number' ? a.createdAt : (a.startDate || 0);
+        const bTime = typeof b.createdAt === 'number' ? b.createdAt : (b.startDate || 0);
+        return bTime - aTime;
+      });
+
       callback(subs);
     }, (error) => {
       console.error("Error subscribing to subscriptions:", error);
     });
+  },
+
+  async getAllSubscriptions(): Promise<Subscription[]> {
+    try {
+      const { getDocs } = await import('firebase/firestore');
+      const snapshot = await getDocs(collection(db, 'subscriptions'));
+      const subs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Subscription[];
+
+      subs.sort((a, b) => {
+        const aTime = typeof a.createdAt === 'number' ? a.createdAt : (a.startDate || 0);
+        const bTime = typeof b.createdAt === 'number' ? b.createdAt : (b.startDate || 0);
+        return bTime - aTime;
+      });
+
+      return subs;
+    } catch (error) {
+      console.error("Error getting all subscriptions:", error);
+      return [];
+    }
   }
 };

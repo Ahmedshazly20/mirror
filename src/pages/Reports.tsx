@@ -39,7 +39,7 @@ import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useWorkspaceStore } from '../store';
-import { formatCurrency, formatDuration, toMillis } from '../lib/utils-workspace';
+import { formatCurrency, formatDuration, toMillis, getSessionDateMillis } from '../lib/utils-workspace';
 import { 
   exportToExcel, 
   formatSessionForExport, 
@@ -143,41 +143,58 @@ export default function Reports() {
     const startMs = startDate.getTime();
     const endMs = endDate.getTime();
 
-    // 1. Filter completed sessions in range
+    // 1. Map of ALL entities that have at least one explicit payment record across the entire payments collection
+    const entitiesWithPayments = {
+      sessionIds: new Set<string>(),
+      subscriptionIds: new Set<string>(),
+      bookingIds: new Set<string>(),
+    };
+
+    (payments || []).forEach(p => {
+      if (p.sessionId) entitiesWithPayments.sessionIds.add(p.sessionId);
+      if (p.subscriptionId) entitiesWithPayments.subscriptionIds.add(p.subscriptionId);
+      if (p.bookingId) entitiesWithPayments.bookingIds.add(p.bookingId);
+    });
+
+    // 2. Identify bookings that were checked in and completed as sessions (to prevent double-counting billed/due amounts)
+    const completedSessionBookingIds = new Set<string>();
+    completedSessions.forEach(s => {
+      if (s.bookingId) completedSessionBookingIds.add(s.bookingId);
+    });
+
+    // 3. Filter completed sessions whose activity started in range (Session History canonical date)
     const sessionsInRange = completedSessions.filter(s => {
-      const sTime = toMillis(s.startTime);
+      const sTime = getSessionDateMillis(s) ?? toMillis(s.startTime ?? s.createdAt);
       return sTime >= startMs && sTime <= endMs;
     });
 
-    // 2. Filter subscriptions & packages created/activated in range
+    // 4. Filter subscriptions & packages created/activated in range
     const subscriptionsInRange = subscriptions.filter(sub => {
-      const sTime = toMillis(sub.startDate || sub.createdAt);
+      const sTime = toMillis(sub.startDate ?? sub.createdAt);
       return sTime >= startMs && sTime <= endMs;
     });
 
-    // 3. Filter bookings created or occurring in range
+    // 5. Filter standalone bookings in range (excluding bookings that became sessions)
     const bookingsInRange = (bookings || []).filter(b => {
-      const bTime = toMillis(b.startTime || b.createdAt);
+      if (completedSessionBookingIds.has(b.id)) return false;
+      if (b.activeSessionId && completedSessions.some(s => s.id === b.activeSessionId)) return false;
+      const bTime = toMillis(b.startTime ?? b.createdAt);
       return bTime >= startMs && bTime <= endMs;
     });
 
-    // 4. Filter expenses in range
+    // 6. Filter expenses in range
     const expensesInRange = expenses.filter(e => {
       const eTime = toMillis(e.date);
       return eTime >= startMs && eTime <= endMs;
     });
 
-    // 5. Filter direct payments recorded in range (Unified Payment Stream)
+    // 7. Filter direct payments recorded in range (Unified Payment Stream - Direct Source of Truth)
     const paymentsInRange = (payments || []).filter(p => {
       const pTime = toMillis(p.date || p.createdAt);
       return pTime >= startMs && pTime <= endMs;
     });
 
     // ── FINANCIAL BREAKDOWN & UNIFIED REVENUE RECOGNITION ──
-    const coveredSessionIds = new Set<string>();
-    const coveredSubscriptionIds = new Set<string>();
-    const coveredBookingIds = new Set<string>();
-
     let totalCashPayment = 0;
     let totalInstapayPayment = 0;
     let cashCount = 0;
@@ -188,9 +205,9 @@ export default function Reports() {
     let bookingReceivedTotal = 0;
     let otherReceivedTotal = 0;
 
-    // 1. Process all explicit payment records in range (Direct Source of Truth)
+    // A. Process all explicit payment records in range (Direct Cash Inflow)
     paymentsInRange.forEach(p => {
-      const amount = p.amount || 0;
+      const amount = Number(p.amount) || 0;
       if (amount <= 0) return;
 
       const isInstapay = p.paymentMethod === 'instapay';
@@ -203,20 +220,79 @@ export default function Reports() {
       }
 
       if (p.sessionId) {
-        coveredSessionIds.add(p.sessionId);
         sessionReceivedTotal += amount;
       } else if (p.subscriptionId) {
-        coveredSubscriptionIds.add(p.subscriptionId);
         subscriptionReceivedTotal += amount;
       } else if (p.bookingId) {
-        coveredBookingIds.add(p.bookingId);
         bookingReceivedTotal += amount;
       } else {
         otherReceivedTotal += amount;
       }
     });
 
-    // 2. Reconcile legacy/direct sessions in range not in payments collection
+    // B. Reconcile legacy sessions in range that have ZERO records anywhere in payments collection
+    sessionsInRange.forEach(s => {
+      if (!entitiesWithPayments.sessionIds.has(s.id)) {
+        const paid = typeof s.paidAmount === 'number' 
+          ? s.paidAmount 
+          : (s.paymentStatus === 'unpaid' ? 0 : (s.totalCost || 0));
+
+        if (paid > 0) {
+          sessionReceivedTotal += paid;
+          if (s.paymentMethod === 'instapay') {
+            totalInstapayPayment += paid;
+            instapayCount++;
+          } else {
+            totalCashPayment += paid;
+            cashCount++;
+          }
+        }
+      }
+    });
+
+    // C. Reconcile legacy subscriptions in range that have ZERO records anywhere in payments collection
+    subscriptionsInRange.forEach(sub => {
+      if (!entitiesWithPayments.subscriptionIds.has(sub.id)) {
+        const paid = typeof sub.paidAmount === 'number' 
+          ? sub.paidAmount 
+          : (sub.paymentStatus === 'unpaid' ? 0 : (sub.price || 0));
+
+        if (paid > 0) {
+          subscriptionReceivedTotal += paid;
+          if (sub.paymentMethod === 'instapay') {
+            totalInstapayPayment += paid;
+            instapayCount++;
+          } else {
+            totalCashPayment += paid;
+            cashCount++;
+          }
+        }
+      }
+    });
+
+    // D. Reconcile legacy bookings in range that have ZERO records anywhere in payments collection
+    bookingsInRange.forEach(b => {
+      if (!entitiesWithPayments.bookingIds.has(b.id)) {
+        const paid = typeof b.paidAmount === 'number' 
+          ? b.paidAmount 
+          : (b.paymentStatus === 'unpaid' ? 0 : (b.totalPrice || 0));
+
+        if (paid > 0) {
+          bookingReceivedTotal += paid;
+          if (b.paymentMethod === 'instapay') {
+            totalInstapayPayment += paid;
+            instapayCount++;
+          } else {
+            totalCashPayment += paid;
+            cashCount++;
+          }
+        }
+      }
+    });
+
+    const totalRevenueReceived = totalCashPayment + totalInstapayPayment;
+
+    // ── TOTAL BILLED & OUTSTANDING BALANCE RECOGNITION ──
     let sessionBilledTotal = 0;
     let sessionOutstandingTotal = 0;
 
@@ -224,29 +300,13 @@ export default function Reports() {
       const total = s.totalCost || 0;
       sessionBilledTotal += total;
 
-      const paid = s.paidAmount !== undefined 
-        ? s.paidAmount 
-        : (s.paymentStatus === 'unpaid' ? 0 : total);
-      
-      const remaining = s.remainingAmount !== undefined 
-        ? s.remainingAmount 
-        : Math.max(0, total - paid);
+      const remaining = typeof s.remainingAmount === 'number'
+        ? s.remainingAmount
+        : (s.paymentStatus === 'unpaid' ? total : Math.max(0, total - (s.paidAmount || 0)));
 
       sessionOutstandingTotal += remaining;
-
-      if (paid > 0 && !coveredSessionIds.has(s.id)) {
-        sessionReceivedTotal += paid;
-        if (s.paymentMethod === 'instapay') {
-          totalInstapayPayment += paid;
-          instapayCount++;
-        } else {
-          totalCashPayment += paid;
-          cashCount++;
-        }
-      }
     });
 
-    // 3. Reconcile legacy/direct subscriptions in range not in payments collection
     let subscriptionBilledTotal = 0;
     let subscriptionOutstandingTotal = 0;
 
@@ -254,57 +314,30 @@ export default function Reports() {
       const price = sub.price || 0;
       subscriptionBilledTotal += price;
 
-      const paid = sub.paidAmount !== undefined 
-        ? sub.paidAmount 
-        : (sub.paymentStatus === 'unpaid' ? 0 : price);
-      
-      const remaining = sub.remainingAmount !== undefined 
-        ? sub.remainingAmount 
-        : Math.max(0, price - paid);
+      const remaining = typeof sub.remainingAmount === 'number'
+        ? sub.remainingAmount
+        : (sub.paymentStatus === 'unpaid' ? price : Math.max(0, price - (sub.paidAmount || 0)));
 
       subscriptionOutstandingTotal += remaining;
-
-      if (paid > 0 && !coveredSubscriptionIds.has(sub.id)) {
-        subscriptionReceivedTotal += paid;
-        if (sub.paymentMethod === 'instapay') {
-          totalInstapayPayment += paid;
-          instapayCount++;
-        } else {
-          totalCashPayment += paid;
-          cashCount++;
-        }
-      }
     });
 
-    // 4. Reconcile room bookings in range not in payments collection
     let bookingBilledTotal = 0;
     let bookingOutstandingTotal = 0;
 
     bookingsInRange.forEach(b => {
-      if (b.activeSessionId && coveredSessionIds.has(b.activeSessionId)) return;
       const total = b.totalPrice || 0;
       bookingBilledTotal += total;
 
-      const paid = b.paidAmount || 0;
-      const remaining = b.remainingAmount !== undefined ? b.remainingAmount : Math.max(0, total - paid);
-      bookingOutstandingTotal += remaining;
+      const remaining = typeof b.remainingAmount === 'number'
+        ? b.remainingAmount
+        : (b.paymentStatus === 'unpaid' ? total : Math.max(0, total - (b.paidAmount || 0)));
 
-      if (paid > 0 && !coveredBookingIds.has(b.id)) {
-        bookingReceivedTotal += paid;
-        if (b.paymentMethod === 'instapay') {
-          totalInstapayPayment += paid;
-          instapayCount++;
-        } else {
-          totalCashPayment += paid;
-          cashCount++;
-        }
-      }
+      bookingOutstandingTotal += remaining;
     });
 
-    const totalRevenueReceived = totalCashPayment + totalInstapayPayment;
     const totalBilled = sessionBilledTotal + subscriptionBilledTotal + bookingBilledTotal;
     const totalOutstanding = sessionOutstandingTotal + subscriptionOutstandingTotal + bookingOutstandingTotal;
-    const totalExpenses = expensesInRange.reduce((acc, e) => acc + (e.amount || 0), 0);
+    const totalExpenses = expensesInRange.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
     const netProfit = totalRevenueReceived - totalExpenses;
 
     // ── TRENDS CALCULATION (Day by Day Realized Cash Flow) ──
@@ -333,22 +366,35 @@ export default function Reports() {
       });
 
       const daySessions = sessionsInRange.filter(s => {
-        const sTime = toMillis(s.startTime);
+        const sTime = getSessionDateMillis(s) ?? toMillis(s.startTime ?? s.createdAt);
         return sTime >= dayStart && sTime <= dayEnd;
       });
 
-      // Daily payment revenue sum
-      let dayRev = dayPayments.reduce((acc, p) => acc + (p.amount || 0), 0);
+      // Daily payment revenue sum from explicit payments
+      let dayRev = dayPayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
 
-      // If no payments recorded for a day session (legacy), add its paid amount
+      // Reconcile legacy sessions occurring on that day that have no records in payments
       daySessions.forEach(s => {
-        if (!coveredSessionIds.has(s.id)) {
-          const paid = s.paidAmount !== undefined ? s.paidAmount : (s.paymentStatus === 'unpaid' ? 0 : (s.totalCost || 0));
+        if (!entitiesWithPayments.sessionIds.has(s.id)) {
+          const paid = typeof s.paidAmount === 'number' 
+            ? s.paidAmount 
+            : (s.paymentStatus === 'unpaid' ? 0 : (s.totalCost || 0));
           dayRev += paid;
         }
       });
 
-      const dayExpenseAmount = dayExpenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+      // Reconcile legacy subscriptions created on that day that have no records in payments
+      subscriptionsInRange.forEach(sub => {
+        const subTime = toMillis(sub.createdAt ?? sub.startDate);
+        if (subTime >= dayStart && subTime <= dayEnd && !entitiesWithPayments.subscriptionIds.has(sub.id)) {
+          const paid = typeof sub.paidAmount === 'number' 
+            ? sub.paidAmount 
+            : (sub.paymentStatus === 'unpaid' ? 0 : (sub.price || 0));
+          dayRev += paid;
+        }
+      });
+
+      const dayExpenseAmount = dayExpenses.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
 
       return {
         name: diffDays > 7 
