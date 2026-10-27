@@ -1,4 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { sessionService } from '../services/sessionService';
+import { paymentService } from '../services/paymentService';
+import { bookingService } from '../services/bookingService';
 import { 
   BarChart, 
   Bar, 
@@ -137,6 +140,20 @@ export default function Reports() {
 
     return { startDate: start, endDate: end };
   }, [selectedPreset, customStartDate, customEndDate]);
+
+  // On-demand fetch for historical date ranges when viewing reports
+  useEffect(() => {
+    const startMs = startDate.getTime();
+    const endMs = endDate.getTime();
+
+    Promise.all([
+      sessionService.getCompletedSessionsByDateRange(startMs, endMs),
+      paymentService.getPaymentsByDateRange(startMs, endMs),
+      bookingService.getBookingsByDateRange(startMs, endMs)
+    ]).catch(err => {
+      console.warn('Error loading report date range:', err);
+    });
+  }, [startDate, endDate]);
 
   // Main Analytics & Accounting Calculation Engine (Single Source of Truth)
   const analyticsData = useMemo(() => {

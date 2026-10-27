@@ -9,7 +9,8 @@ import {
   getDoc, 
   getDocs,
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Payment, Booking } from '../types';
@@ -76,8 +77,8 @@ export const paymentService = {
     }
   },
 
-  subscribeToPayments(callback: (payments: Payment[]) => void) {
-    const q = query(collection(db, 'payments'), orderBy('date', 'desc'));
+  subscribeToPayments(callback: (payments: Payment[]) => void, limitCount = 100) {
+    const q = query(collection(db, 'payments'), orderBy('date', 'desc'), limit(limitCount));
     return onSnapshot(q, (snapshot) => {
       const payments = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -87,5 +88,28 @@ export const paymentService = {
     }, (error) => {
       console.error('Error subscribing to payments:', error);
     });
+  },
+
+  /**
+   * On-demand date range fetch for Reports and Financial Audits.
+   */
+  async getPaymentsByDateRange(startMs: number, endMs: number): Promise<Payment[]> {
+    try {
+      const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+      const q = query(
+        collection(db, 'payments'),
+        where('date', '>=', startMs),
+        where('date', '<=', endMs)
+      );
+      const snapshot = await getDocs(q);
+      recordFirestoreRead('getPaymentsByDateRange', snapshot.size);
+      const payments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Payment[];
+      const { useWorkspaceStore } = await import('../store');
+      useWorkspaceStore.getState().mergePayments(payments);
+      return payments;
+    } catch (e) {
+      console.warn('Error fetching payments by date range:', e);
+      return [];
+    }
   }
 };

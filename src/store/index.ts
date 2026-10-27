@@ -53,11 +53,15 @@ interface WorkspaceState {
   // Loading States
   isLoading: boolean;
   setIsLoading: (loading: boolean) => void;
+  bookingsLoaded: boolean;
+  sessionsLoaded: boolean;
 
   // Actions
   setSessions: (sessions: Session[]) => void;
   setCompletedSessions: (sessions: Session[]) => void;
+  mergeCompletedSessions: (sessions: Session[]) => void;
   setBookings: (bookings: Booking[]) => void;
+  mergeBookings: (bookings: Booking[]) => void;
   setRooms: (rooms: Room[]) => void;
   setSubscriptions: (subscriptions: Subscription[]) => void;
   setPackages: (packages: Package[]) => void;
@@ -65,10 +69,12 @@ interface WorkspaceState {
   setExpenses: (expenses: Expense[]) => void;
   setExpenseCategories: (categories: ExpenseCategory[]) => void;
   setCustomers: (customers: Customer[]) => void;
+  upsertCustomer: (customer: Customer) => void;
   setInventoryItems: (items: InventoryItem[]) => void;
   setInventoryMovements: (movements: InventoryMovement[]) => void;
   setVisits: (visits: Visit[]) => void;
   setPayments: (payments: Payment[]) => void;
+  mergePayments: (payments: Payment[]) => void;
   setSettings: (settings: WorkspaceSettings) => void;
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
@@ -136,6 +142,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   isLoading: false,
   setIsLoading: (loading) => set({ isLoading: loading }),
+  bookingsLoaded: false,
+  sessionsLoaded: false,
 
   setSessions: (sessions) => {
     const seenIds = new Set<string>();
@@ -162,10 +170,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       cleanSessions.push(s);
     }
 
-    set({ sessions: cleanSessions });
+    set({ sessions: cleanSessions, sessionsLoaded: true });
   },
   setCompletedSessions: (completedSessions) => set({ completedSessions }),
-  setBookings: (bookings) => set({ bookings }),
+  mergeCompletedSessions: (incomingSessions) => set((state) => {
+    const map = new Map<string, Session>();
+    state.completedSessions.forEach(s => map.set(s.id, s));
+    incomingSessions.forEach(s => map.set(s.id, s));
+    const merged = Array.from(map.values());
+    merged.sort((a, b) => {
+      const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
+      const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+      return bTime - aTime;
+    });
+    return { completedSessions: merged };
+  }),
+  setBookings: (bookings) => set({ bookings, bookingsLoaded: true }),
+  mergeBookings: (incomingBookings) => set((state) => {
+    const map = new Map<string, Booking>();
+    state.bookings.forEach(b => map.set(b.id, b));
+    incomingBookings.forEach(b => map.set(b.id, b));
+    return { bookings: Array.from(map.values()), bookingsLoaded: true };
+  }),
   setRooms: (rooms) => set((state) => ({ 
     rooms: rooms && rooms.length > 0 ? rooms : state.rooms,
     settings: {
@@ -179,10 +205,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setExpenses: (expenses) => set({ expenses }),
   setExpenseCategories: (expenseCategories) => set({ expenseCategories }),
   setCustomers: (customers) => set({ customers }),
+  upsertCustomer: (customer) => set((state) => {
+    const existingIndex = state.customers.findIndex(c => c.id === customer.id || (customer.customerId && c.customerId === customer.customerId));
+    if (existingIndex >= 0) {
+      const updated = [...state.customers];
+      updated[existingIndex] = { ...updated[existingIndex], ...customer };
+      return { customers: updated };
+    }
+    return { customers: [customer, ...state.customers] };
+  }),
   setInventoryItems: (inventoryItems) => set({ inventoryItems }),
   setInventoryMovements: (inventoryMovements) => set({ inventoryMovements }),
   setVisits: (visits) => set({ visits }),
   setPayments: (payments) => set({ payments }),
+  mergePayments: (incomingPayments) => set((state) => {
+    const map = new Map<string, Payment>();
+    state.payments.forEach(p => map.set(p.id, p));
+    incomingPayments.forEach(p => map.set(p.id, p));
+    const merged = Array.from(map.values());
+    merged.sort((a, b) => toMillis(b.date || b.createdAt) - toMillis(a.date || a.createdAt));
+    return { payments: merged };
+  }),
   setSettings: (settings) => set((state) => {
     const finalRooms = (settings.rooms && settings.rooms.length > 0) 
       ? settings.rooms 

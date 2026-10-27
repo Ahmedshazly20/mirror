@@ -438,13 +438,32 @@ export const inventoryService = {
     referenceId?: string
   ): Promise<void> {
     try {
-      const servicesSnap = await getDocs(collection(db, 'services'));
+      if (!servicesList || servicesList.length === 0) return;
+
+      const { useWorkspaceStore } = await import('../store');
+      const memoryServices = useWorkspaceStore.getState().availableServices;
       const serviceMap = new Map<string, ServiceItem>();
-      servicesSnap.docs.forEach(doc => {
-        const data = { id: doc.id, ...doc.data() } as ServiceItem;
-        serviceMap.set(doc.id, data);
-        serviceMap.set(data.name.trim().toLowerCase(), data);
-      });
+
+      if (memoryServices && memoryServices.length > 0) {
+        // Zero Firestore reads: use in-memory catalog
+        memoryServices.forEach(s => {
+          if (s.id) serviceMap.set(s.id, s);
+          if (s.name) serviceMap.set(s.name.trim().toLowerCase(), s);
+        });
+      } else {
+        // Scoped fetch: only fetch specific service items needed
+        const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+        const neededIds = servicesList.map(s => s.id).filter(Boolean) as string[];
+        for (const sId of neededIds) {
+          const sSnap = await getDoc(doc(db, 'services', sId));
+          recordFirestoreRead('deductStock:serviceDoc', sSnap.exists() ? 1 : 0);
+          if (sSnap.exists()) {
+            const data = { id: sSnap.id, ...sSnap.data() } as ServiceItem;
+            serviceMap.set(data.id, data);
+            serviceMap.set(data.name.trim().toLowerCase(), data);
+          }
+        }
+      }
 
       for (const item of servicesList) {
         const matched = (item.id ? serviceMap.get(item.id) : null) || serviceMap.get(item.name.trim().toLowerCase());

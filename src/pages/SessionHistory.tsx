@@ -49,21 +49,35 @@ export default function SessionHistory() {
   const isRTL = i18n.language.startsWith('ar');
   const dateLocale = isRTL ? arSA : enUS;
 
-  // Real-time listener fallback & manual refresh
+  // On-demand date range query whenever selectedDate changes
+  useEffect(() => {
+    if (!selectedDate) return;
+    const dayStart = new Date(selectedDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(selectedDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime()).catch(err => {
+      console.warn('Could not fetch sessions for date:', err);
+    });
+  }, [selectedDate]);
+
+  // Real-time listener fallback & manual refresh for the selected day
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const all = await sessionService.getAllCompletedSessions();
-      if (all && all.length > 0) {
-        setCompletedSessions(all);
-      }
+      const dayStart = new Date(selectedDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(selectedDate);
+      dayEnd.setHours(23, 59, 59, 999);
+      await sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime());
       toast.success(isRTL ? 'تم تحديث سجل الجلسات' : 'History updated');
     } catch (e) {
       console.warn('Could not refresh completed sessions:', e);
     } finally {
       setIsRefreshing(false);
     }
-  }, [setCompletedSessions, isRTL]);
+  }, [selectedDate, isRTL]);
 
   const handlePrevDate = useCallback(() => {
     setSelectedDate(prev => {

@@ -218,6 +218,7 @@ export interface Customer {
   id: string;
   customerId: number; // Unique numeric ID e.g., 12
   name: string;
+  nameLower?: string;
   phone: string;
   email?: string;
   notes?: string;

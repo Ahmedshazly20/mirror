@@ -548,11 +548,12 @@ export const sessionService = {
   },
 
   // ── Completed Sessions Subscriptions ──
-  // Fetches completed sessions in real-time and sorts newest first
-  subscribeToRecentSessions(callback: (sessions: Session[]) => void) {
+  // Bounded real-time listener for recent completed operational window
+  subscribeToRecentSessions(callback: (sessions: Session[]) => void, limitCount = 50) {
     const q = query(
       collection(db, 'sessions'),
       where('status', '==', 'completed'),
+      limit(limitCount)
     );
     return onSnapshot(
       q,
@@ -572,13 +573,45 @@ export const sessionService = {
     );
   },
 
-  async getAllCompletedSessions(): Promise<Session[]> {
+  /**
+   * On-demand date range fetch for Session History and Reports.
+   * Avoids continuous listeners on old sessions while guaranteeing full historical access.
+   */
+  async getCompletedSessionsByDateRange(startMs: number, endMs: number): Promise<Session[]> {
     try {
+      const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+      const startTs = Timestamp.fromMillis(startMs);
+      const endTs = Timestamp.fromMillis(endMs);
+
       const q = query(
         collection(db, 'sessions'),
         where('status', '==', 'completed'),
+        where('startTime', '>=', startTs),
+        where('startTime', '<=', endTs)
       );
       const snapshot = await getDocs(q);
+      recordFirestoreRead('getCompletedSessionsByDateRange', snapshot.size);
+      const sessions = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Session[];
+      
+      const { useWorkspaceStore } = await import('../store');
+      useWorkspaceStore.getState().mergeCompletedSessions(sessions);
+      return sessions;
+    } catch (e) {
+      console.warn('Error fetching completed sessions by date range:', e);
+      return [];
+    }
+  },
+
+  async getAllCompletedSessions(limitCount = 100): Promise<Session[]> {
+    try {
+      const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+      const q = query(
+        collection(db, 'sessions'),
+        where('status', '==', 'completed'),
+        limit(limitCount)
+      );
+      const snapshot = await getDocs(q);
+      recordFirestoreRead('getAllCompletedSessions', snapshot.size);
       const completed = snapshot.docs.map(
         (d) => ({ id: d.id, ...d.data() } as Session),
       );
@@ -587,6 +620,8 @@ export const sessionService = {
         const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
         return bTime - aTime;
       });
+      const { useWorkspaceStore } = await import('../store');
+      useWorkspaceStore.getState().mergeCompletedSessions(completed);
       return completed;
     } catch (error) {
       this._handleFirebaseError(error, 'Get All Completed Sessions');

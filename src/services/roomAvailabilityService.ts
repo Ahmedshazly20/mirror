@@ -210,33 +210,46 @@ export async function checkRoomConflictInFirestore(
   }
 
   try {
-    // 1. Check in-memory store first (Zero reads)
+    // 1. Check in-memory store first (Zero reads if listeners have populated store)
     try {
       const { useWorkspaceStore } = await import('../store');
       const storeState = useWorkspaceStore.getState();
-      const memBookings = storeState.bookings;
-      const memSessions = storeState.sessions;
 
-      if (memBookings && memBookings.length > 0) {
-        return checkRoomConflictInMemory(roomId, startTime, endTime, memBookings, memSessions || [], options);
+      if (storeState.bookingsLoaded && storeState.sessionsLoaded) {
+        return checkRoomConflictInMemory(
+          roomId, 
+          startTime, 
+          endTime, 
+          storeState.bookings || [], 
+          storeState.sessions || [], 
+          options
+        );
       }
     } catch (_) {}
 
-    // 2. Targeted fallback queries if memory is empty
+    // 2. Targeted scoped fallback queries only if store is not loaded yet
+    const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+    
+    // Scoped query for bookings for this specific room
     const bookingsRef = collection(db, 'bookings');
     const bookingsSnap = await getDocs(query(
       bookingsRef,
+      where('roomId', '==', roomId),
       where('status', 'in', ['confirmed', 'active']),
-      limit(50)
+      where('startTime', '<', endTime),
+      limit(20)
     ));
+    recordFirestoreRead('checkRoomConflict:bookingsScoped', bookingsSnap.size);
     const allBookings = bookingsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Booking[];
 
+    // Active sessions query (only active sessions occupy rooms)
     const sessionsRef = collection(db, 'sessions');
     const sessionsSnap = await getDocs(query(
       sessionsRef, 
       where('status', '==', 'active'),
-      limit(50)
+      limit(20)
     ));
+    recordFirestoreRead('checkRoomConflict:sessionsActive', sessionsSnap.size);
     const allSessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Session[];
 
     return checkRoomConflictInMemory(roomId, startTime, endTime, allBookings, allSessions, options);

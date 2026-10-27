@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Users, 
   Search, 
@@ -60,14 +60,44 @@ export default function Customers() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
+  const [isSearchingRemote, setIsSearchingRemote] = useState(false);
+
+  // Debounced search against Firestore for customers not currently in recent store window
+  useEffect(() => {
+    if (!searchTerm || !searchTerm.trim()) return;
+    const term = searchTerm.trim();
+    const cleanTerm = term.replace(/^#/, '').trim();
+    const isPureDigits = /^\d+$/.test(cleanTerm);
+
+    if (term.length < 2 && !isPureDigits) return;
+
+    setIsSearchingRemote(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = await customerService.searchCustomers(term, 20);
+        results.forEach(c => {
+          useWorkspaceStore.getState().upsertCustomer(c);
+        });
+      } catch (e) {
+        console.warn('Error in remote customer search:', e);
+      } finally {
+        setIsSearchingRemote(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
   // Filter & Search Customers
   const filteredCustomers = useMemo(() => {
     if (!searchTerm.trim()) return customers;
     const term = searchTerm.toLowerCase().trim();
+    const cleanTerm = term.replace(/^#/, '');
     return customers.filter(c => 
-      c.customerId?.toString().includes(term) ||
+      c.customerId?.toString() === cleanTerm ||
+      c.customerId?.toString().includes(cleanTerm) ||
       c.name.toLowerCase().includes(term) ||
-      c.phone.includes(term) ||
+      c.phone.includes(cleanTerm) ||
       (c.email && c.email.toLowerCase().includes(term))
     );
   }, [customers, searchTerm]);

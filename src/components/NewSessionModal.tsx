@@ -13,11 +13,12 @@ import { Badge } from '@/components/ui/badge';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceStore } from '../store';
 import { sessionService } from '../services/sessionService';
+import { customerService } from '../services/customerService';
 import {
   User, Crown, Check, Zap, Clock, Calculator,
   Phone, DoorOpen, Table2, Users, Search, ChevronDown,
   X, Sparkles, CheckCircle2, Hash, ArrowRight, History,
-  AlertCircle
+  AlertCircle, Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -72,10 +73,45 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
 
   // ─── Customer Search State ───────────────────────────────────────────────
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [remoteCustomers, setRemoteCustomers] = useState<Customer[]>([]);
+  const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  // Debounced targeted customer search (350ms)
+  useEffect(() => {
+    if (!customerSearchTerm || !customerSearchTerm.trim()) {
+      setRemoteCustomers([]);
+      setIsSearchingCustomer(false);
+      return;
+    }
+
+    const term = customerSearchTerm.trim();
+    const cleanTerm = term.replace(/^#/, '').trim();
+    const isPureDigits = /^\d+$/.test(cleanTerm);
+
+    if (term.length < 2 && !isPureDigits) {
+      setRemoteCustomers([]);
+      setIsSearchingCustomer(false);
+      return;
+    }
+
+    setIsSearchingCustomer(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = await customerService.searchCustomers(term, 8);
+        setRemoteCustomers(results);
+      } catch (e) {
+        console.warn('Error in searchCustomers:', e);
+      } finally {
+        setIsSearchingCustomer(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [customerSearchTerm]);
 
   // ─── Room / Table State ───────────────────────────────────────────────────
   const [selectedRoomId, setSelectedRoomId] = useState<string>('');
@@ -131,20 +167,32 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
     );
   }, [selectedRoomId, nowMillis, reqEndMillis, bookings, activeSessions, availableRooms]);
 
-  // ─── Filtered Customers for Search Dropdown ──────────────────────────────
+  // ─── Filtered Customers for Search Dropdown (Store + Remote Search Results) ──
   const filteredCustomers = useMemo(() => {
     if (!customerSearchTerm.trim()) return [];
     const term = customerSearchTerm.toLowerCase().trim();
     const cleanTerm = term.replace(/^#/, '');
 
-    return customers.filter(c => {
-      const matchId = c.customerId?.toString().includes(cleanTerm);
+    const map = new Map<string, Customer>();
+
+    // 1. Check local loaded customers in store
+    customers.forEach(c => {
+      const matchId = c.customerId?.toString() === cleanTerm || c.customerId?.toString().includes(cleanTerm);
       const matchName = c.name.toLowerCase().includes(term);
       const matchPhone = c.phone.includes(cleanTerm) || c.phone.includes(term);
       const matchEmail = c.email ? c.email.toLowerCase().includes(term) : false;
-      return matchId || matchName || matchPhone || matchEmail;
-    }).slice(0, 8);
-  }, [customers, customerSearchTerm]);
+      if (matchId || matchName || matchPhone || matchEmail) {
+        map.set(c.id, c);
+      }
+    });
+
+    // 2. Add remote query results
+    remoteCustomers.forEach(c => {
+      map.set(c.id, c);
+    });
+
+    return Array.from(map.values()).slice(0, 8);
+  }, [customers, remoteCustomers, customerSearchTerm]);
 
   // Handle selecting a customer from search
   const handleSelectCustomer = (customer: Customer) => {
@@ -419,19 +467,22 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                 )}
               />
               {customerSearchTerm && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCustomerSearchTerm('');
-                    searchInputRef.current?.focus();
-                  }}
-                  className={cn(
-                    "absolute top-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors",
-                    isRTL ? "left-3" : "right-3"
+                <div className={cn("absolute top-1/2 -translate-y-1/2 flex items-center gap-1", isRTL ? "left-3" : "right-3")}>
+                  {isSearchingCustomer && (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-500 mr-1" />
                   )}
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerSearchTerm('');
+                      setRemoteCustomers([]);
+                      searchInputRef.current?.focus();
+                    }}
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               )}
             </div>
 

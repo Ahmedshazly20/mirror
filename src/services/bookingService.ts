@@ -34,15 +34,18 @@ export const bookingService = {
 
       // 2. Check customer overlap (using phone or name in bookings)
       const { useWorkspaceStore } = await import('../store');
-      const storeBookings = useWorkspaceStore.getState().bookings;
-      let existingBookings: Booking[] = storeBookings || [];
-      if (existingBookings.length === 0) {
+      const storeState = useWorkspaceStore.getState();
+      let existingBookings: Booking[] = storeState.bookings || [];
+      if (!storeState.bookingsLoaded) {
+        const { recordFirestoreRead } = await import('../lib/firestore-metrics');
         const bookingsRef = collection(db, 'bookings');
         const snapshot = await getDocs(query(
           bookingsRef,
           where('status', 'in', ['confirmed', 'active']),
-          limit(50)
+          where('startTime', '<', endTime),
+          limit(30)
         ));
+        recordFirestoreRead('createBooking:customerOverlapCheck', snapshot.size);
         existingBookings = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
@@ -245,10 +248,11 @@ export const bookingService = {
     }
   },
 
-  subscribeToBookings(callback: (bookings: Booking[]) => void) {
+  subscribeToBookings(callback: (bookings: Booking[]) => void, limitCount = 100) {
     const q = query(
       collection(db, 'bookings'),
-      orderBy('startTime', 'asc')
+      orderBy('startTime', 'desc'),
+      limit(limitCount)
     );
     
     return onSnapshot(q, (snapshot) => {
@@ -256,9 +260,34 @@ export const bookingService = {
         id: doc.id,
         ...doc.data()
       })) as Booking[];
+      // Keep chronological order in UI
+      bookings.sort((a, b) => a.startTime - b.startTime);
       callback(bookings);
     }, (error) => {
       console.error("Error subscribing to bookings:", error);
     });
+  },
+
+  /**
+   * On-demand date range fetch for historical or future bookings outside the active real-time window.
+   */
+  async getBookingsByDateRange(startMs: number, endMs: number): Promise<Booking[]> {
+    try {
+      const { recordFirestoreRead } = await import('../lib/firestore-metrics');
+      const q = query(
+        collection(db, 'bookings'),
+        where('startTime', '>=', startMs),
+        where('startTime', '<=', endMs)
+      );
+      const snapshot = await getDocs(q);
+      recordFirestoreRead('getBookingsByDateRange', snapshot.size);
+      const bookings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Booking[];
+      const { useWorkspaceStore } = await import('../store');
+      useWorkspaceStore.getState().mergeBookings(bookings);
+      return bookings;
+    } catch (e) {
+      console.warn('Error fetching bookings by date range:', e);
+      return [];
+    }
   }
 };
