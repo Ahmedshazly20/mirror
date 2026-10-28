@@ -60,6 +60,7 @@ interface WorkspaceState {
   setSessions: (sessions: Session[]) => void;
   setCompletedSessions: (sessions: Session[]) => void;
   mergeCompletedSessions: (sessions: Session[]) => void;
+  removeCompletedSession: (id: string) => void;
   setBookings: (bookings: Booking[]) => void;
   mergeBookings: (bookings: Booking[]) => void;
   setRooms: (rooms: Room[]) => void;
@@ -175,16 +176,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setCompletedSessions: (completedSessions) => set({ completedSessions }),
   mergeCompletedSessions: (incomingSessions) => set((state) => {
     const map = new Map<string, Session>();
-    state.completedSessions.forEach(s => map.set(s.id, s));
-    incomingSessions.forEach(s => map.set(s.id, s));
+    state.completedSessions.forEach(s => {
+      if (s && s.id) map.set(s.id, s);
+    });
+    incomingSessions.forEach(s => {
+      if (s && s.id) map.set(s.id, s);
+    });
     const merged = Array.from(map.values());
     merged.sort((a, b) => {
-      const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
-      const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+      const aTime = toMillis(a.startTime ?? a.createdAt);
+      const bTime = toMillis(b.startTime ?? b.createdAt);
       return bTime - aTime;
     });
     return { completedSessions: merged };
   }),
+  removeCompletedSession: (id) => set((state) => ({
+    completedSessions: state.completedSessions.filter(s => s.id !== id)
+  })),
   setBookings: (bookings) => set({ bookings, bookingsLoaded: true }),
   mergeBookings: (incomingBookings) => set((state) => {
     const map = new Map<string, Booking>();

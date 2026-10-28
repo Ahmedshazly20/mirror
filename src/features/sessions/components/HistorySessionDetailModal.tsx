@@ -59,8 +59,8 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
   const isPackage = session.isSubscribed && (session.deductedHours !== undefined || session.deductedMinutes !== undefined || session.remainingMinutes !== undefined);
   const isSubscriber = session.isSubscribed && !isPackage;
   const numPersons = session.numberOfPersons || session.roomAssignment?.groupSize || 1;
-  const roomName = session.roomAssignment?.roomName;
-  const tableLabel = session.roomAssignment?.tableLabel || (session.roomAssignment?.tableNumber ? `Table ${session.roomAssignment.tableNumber}` : undefined);
+  const roomName = session.roomAssignment?.roomName || (session as any).roomName;
+  const tableLabel = session.roomAssignment?.tableLabel || (session.roomAssignment?.tableNumber ? `Table ${session.roomAssignment.tableNumber}` : undefined) || (session as any).tableLabel;
 
   const startMillis = toMillis(session.startTime || session.createdAt);
   const endMillis = session.endTime ? toMillis(session.endTime) : (session.completedAt ? toMillis(session.completedAt) : null);

@@ -56,7 +56,7 @@ export const HistorySessionCard = React.memo(function HistorySessionCard({
   const isPackage = session.isSubscribed && (session.deductedHours !== undefined || session.deductedMinutes !== undefined || session.remainingMinutes !== undefined);
   const isSubscriber = session.isSubscribed && !isPackage;
   const numPersons = session.numberOfPersons || session.roomAssignment?.groupSize || 1;
-  const roomName = session.roomAssignment?.roomName || session.roomAssignment?.tableLabel;
+  const roomName = session.roomAssignment?.roomName || session.roomAssignment?.tableLabel || (session as any).roomName;
   const servicesCount = session.services?.reduce((sum, s) => sum + (s.quantity || 1), 0) || 0;
 
   const sessionStartMillis = toMillis(session.startTime || session.createdAt);

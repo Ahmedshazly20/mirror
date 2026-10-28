@@ -16,7 +16,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Session } from '../types';
-import { toMillis } from '../lib/utils-workspace';
+import { toMillis, getSessionDateMillis } from '../lib/utils-workspace';
 import { cleanData } from '../lib/utils';
 import { checkRoomConflictInFirestore } from './roomAvailabilityService';
 
@@ -433,6 +433,10 @@ export const sessionService = {
   async deleteSession(sessionId: string, bookingId?: string) {
     try {
       await deleteDoc(doc(db, 'sessions', sessionId));
+      try {
+        const { useWorkspaceStore } = await import('../store');
+        useWorkspaceStore.getState().removeCompletedSession?.(sessionId);
+      } catch (_) {}
       if (bookingId) {
         try {
           await updateDoc(doc(db, 'bookings', bookingId), cleanData({
@@ -549,7 +553,7 @@ export const sessionService = {
 
   // ── Completed Sessions Subscriptions ──
   // Bounded real-time listener for recent completed operational window
-  subscribeToRecentSessions(callback: (sessions: Session[]) => void, limitCount = 50) {
+  subscribeToRecentSessions(callback: (sessions: Session[]) => void, limitCount = 100) {
     const q = query(
       collection(db, 'sessions'),
       where('status', '==', 'completed'),
@@ -563,8 +567,8 @@ export const sessionService = {
           (d) => ({ id: d.id, ...d.data() } as Session),
         );
         completed.sort((a, b) => {
-          const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
-          const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+          const aTime = toMillis(a.startTime ?? a.createdAt);
+          const bTime = toMillis(b.startTime ?? b.createdAt);
           return bTime - aTime;
         });
         callback(completed);
@@ -576,6 +580,8 @@ export const sessionService = {
   /**
    * On-demand date range fetch for Session History and Reports.
    * Avoids continuous listeners on old sessions while guaranteeing full historical access.
+   * Uses single-field range queries (Timestamp and Number for startTime and createdAt)
+   * which execute natively in Firestore without requiring composite indexes.
    */
   async getCompletedSessionsByDateRange(startMs: number, endMs: number): Promise<Session[]> {
     try {
@@ -583,19 +589,110 @@ export const sessionService = {
       const startTs = Timestamp.fromMillis(startMs);
       const endTs = Timestamp.fromMillis(endMs);
 
-      const q = query(
-        collection(db, 'sessions'),
-        where('status', '==', 'completed'),
-        where('startTime', '>=', startTs),
-        where('startTime', '<=', endTs)
-      );
-      const snapshot = await getDocs(q);
-      recordFirestoreRead('getCompletedSessionsByDateRange', snapshot.size);
-      const sessions = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Session[];
+      // Single-field queries do NOT require composite indexes in Firestore
+      const queriesToTry = [
+        // 1. startTime as Firestore Timestamp
+        query(
+          collection(db, 'sessions'),
+          where('startTime', '>=', startTs),
+          where('startTime', '<=', endTs)
+        ),
+        // 2. startTime as JS number (milliseconds)
+        query(
+          collection(db, 'sessions'),
+          where('startTime', '>=', startMs),
+          where('startTime', '<=', endMs)
+        ),
+        // 3. createdAt as Firestore Timestamp (fallback for sessions missing startTime)
+        query(
+          collection(db, 'sessions'),
+          where('createdAt', '>=', startTs),
+          where('createdAt', '<=', endTs)
+        ),
+        // 4. createdAt as JS number
+        query(
+          collection(db, 'sessions'),
+          where('createdAt', '>=', startMs),
+          where('createdAt', '<=', endMs)
+        ),
+      ];
+
+      const settled = await Promise.allSettled(queriesToTry.map(q => getDocs(q)));
       
+      const docMap = new Map<string, Session>();
+      let totalReads = 0;
+
+      settled.forEach((res) => {
+        if (res.status === 'fulfilled') {
+          totalReads += res.value.size;
+          res.value.docs.forEach((d) => {
+            if (!docMap.has(d.id)) {
+              docMap.set(d.id, { id: d.id, ...d.data() } as Session);
+            }
+          });
+        }
+      });
+
+      recordFirestoreRead('getCompletedSessionsByDateRange', totalReads);
+
+      // In-memory filter: exclude active sessions and strictly enforce local calendar day bounds
+      let matchingSessions = Array.from(docMap.values()).filter((session) => {
+        if (!session || !session.id) return false;
+        // Exclude active sessions
+        if (session.status === 'active') return false;
+
+        const sessionDateMs = getSessionDateMillis(session);
+        if (sessionDateMs === null) return false;
+        return sessionDateMs >= startMs && sessionDateMs <= endMs;
+      });
+
+      // Fallback: If 0 sessions found via range queries, check if any recent completed sessions match
+      if (matchingSessions.length === 0) {
+        try {
+          const fallbackQ = query(
+            collection(db, 'sessions'),
+            where('status', '==', 'completed'),
+            limit(100)
+          );
+          const fallbackSnap = await getDocs(fallbackQ);
+          recordFirestoreRead('getCompletedSessionsByDateRange_fallback', fallbackSnap.size);
+          fallbackSnap.docs.forEach((d) => {
+            const data = { id: d.id, ...d.data() } as Session;
+            const ms = getSessionDateMillis(data);
+            if (ms !== null && ms >= startMs && ms <= endMs) {
+              docMap.set(d.id, data);
+            }
+          });
+          matchingSessions = Array.from(docMap.values()).filter((session) => {
+            if (!session || session.status === 'active') return false;
+            const sessionDateMs = getSessionDateMillis(session);
+            return sessionDateMs !== null && sessionDateMs >= startMs && sessionDateMs <= endMs;
+          });
+        } catch (fallbackErr) {
+          console.warn('Fallback completed query error:', fallbackErr);
+        }
+      }
+
+      // Also merge any existing matching sessions already in store
       const { useWorkspaceStore } = await import('../store');
-      useWorkspaceStore.getState().mergeCompletedSessions(sessions);
-      return sessions;
+      const storeState = useWorkspaceStore.getState();
+      (storeState.completedSessions || []).forEach((s) => {
+        if (s && s.id && s.status !== 'active') {
+          const ms = getSessionDateMillis(s);
+          if (ms !== null && ms >= startMs && ms <= endMs && !docMap.has(s.id)) {
+            matchingSessions.push(s);
+          }
+        }
+      });
+
+      matchingSessions.sort((a, b) => {
+        const aTime = toMillis(a.startTime ?? a.createdAt);
+        const bTime = toMillis(b.startTime ?? b.createdAt);
+        return bTime - aTime;
+      });
+
+      storeState.mergeCompletedSessions(matchingSessions);
+      return matchingSessions;
     } catch (e) {
       console.warn('Error fetching completed sessions by date range:', e);
       return [];
@@ -616,8 +713,8 @@ export const sessionService = {
         (d) => ({ id: d.id, ...d.data() } as Session),
       );
       completed.sort((a, b) => {
-        const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
-        const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+        const aTime = toMillis(a.startTime ?? a.createdAt);
+        const bTime = toMillis(b.startTime ?? b.createdAt);
         return bTime - aTime;
       });
       const { useWorkspaceStore } = await import('../store');

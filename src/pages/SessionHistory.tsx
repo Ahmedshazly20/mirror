@@ -45,39 +45,42 @@ export default function SessionHistory() {
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'guests' | 'subscribers' | 'rooms'>('all');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingDate, setIsLoadingDate] = useState(false);
 
   const isRTL = i18n.language.startsWith('ar');
   const dateLocale = isRTL ? arSA : enUS;
 
   // On-demand date range query whenever selectedDate changes
-  useEffect(() => {
-    if (!selectedDate) return;
-    const dayStart = new Date(selectedDate);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(selectedDate);
-    dayEnd.setHours(23, 59, 59, 999);
-
-    sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime()).catch(err => {
+  const loadDateSessions = useCallback(async (date: Date) => {
+    if (!date) return;
+    setIsLoadingDate(true);
+    try {
+      const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+      const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+      await sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime());
+    } catch (err) {
       console.warn('Could not fetch sessions for date:', err);
-    });
-  }, [selectedDate]);
+    } finally {
+      setIsLoadingDate(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDateSessions(selectedDate);
+  }, [selectedDate, loadDateSessions]);
 
   // Real-time listener fallback & manual refresh for the selected day
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const dayStart = new Date(selectedDate);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(selectedDate);
-      dayEnd.setHours(23, 59, 59, 999);
-      await sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime());
+      await loadDateSessions(selectedDate);
       toast.success(isRTL ? 'تم تحديث سجل الجلسات' : 'History updated');
     } catch (e) {
       console.warn('Could not refresh completed sessions:', e);
     } finally {
       setIsRefreshing(false);
     }
-  }, [selectedDate, isRTL]);
+  }, [selectedDate, loadDateSessions, isRTL]);
 
   const handlePrevDate = useCallback(() => {
     setSelectedDate(prev => {
@@ -114,30 +117,78 @@ export default function SessionHistory() {
     return { byId, byPhone, byNumericId, byName };
   }, [customers]);
 
-  // Filtered Sessions with robust date matching & search
+  // Robust classification helpers for rooms, subscribers, and guests
+  const isRoomSession = useCallback((session: Session) => {
+    if (session.bookingId || session.pricingType === 'booking') return true;
+    if (session.roomAssignment && (session.roomAssignment.roomId || session.roomAssignment.roomName)) return true;
+    if ((session as any).roomId || (session as any).roomName) return true;
+    return false;
+  }, []);
+
+  const isSubscriberSession = useCallback((session: Session) => {
+    return Boolean(session.isSubscribed || session.subscriptionId || session.pricingType === 'subscription');
+  }, []);
+
+  const isGuestSession = useCallback((session: Session) => {
+    return !isRoomSession(session) && !isSubscriberSession(session);
+  }, [isRoomSession, isSubscriberSession]);
+
+  // All completed sessions belonging strictly to the selected local calendar day (startTime primary, createdAt fallback)
+  const daySessions = useMemo(() => {
+    return completedSessions.filter(session => {
+      if (!session) return false;
+      const sessionDateMs = getSessionDateMillis(session);
+      if (sessionDateMs === null) return false;
+      return isSameCalendarDay(sessionDateMs, selectedDate);
+    });
+  }, [completedSessions, selectedDate]);
+
+  // Daily Metrics computed across the entire selected day (stable and accurate regardless of active filter)
+  const dailyStats = useMemo(() => {
+    let totalRevenue = 0;
+    let totalTimeCost = 0;
+    let totalServicesCost = 0;
+    let guestCount = 0;
+    let subscriberCount = 0;
+    let roomCount = 0;
+
+    daySessions.forEach(s => {
+      totalRevenue += s.totalCost || 0;
+      totalTimeCost += s.timeCost || 0;
+      totalServicesCost += s.servicesCost || 0;
+
+      if (isRoomSession(s)) {
+        roomCount++;
+      } else if (isSubscriberSession(s)) {
+        subscriberCount++;
+      } else {
+        guestCount++;
+      }
+    });
+
+    return {
+      totalRevenue,
+      totalTimeCost,
+      totalServicesCost,
+      totalCount: daySessions.length,
+      guestCount,
+      subscriberCount,
+      roomCount
+    };
+  }, [daySessions, isRoomSession, isSubscriberSession]);
+
+  // Filtered Sessions for the active category filter & search query
   const filteredSessions = useMemo(() => {
     const searchLower = searchQuery.toLowerCase().trim();
     const cleanSearch = searchLower.replace(/^#/, '');
 
-    return completedSessions.filter(session => {
-      if (!session) return false;
+    return daySessions.filter(session => {
+      // 1. Category Filter
+      if (categoryFilter === 'guests' && !isGuestSession(session)) return false;
+      if (categoryFilter === 'subscribers' && !isSubscriberSession(session)) return false;
+      if (categoryFilter === 'rooms' && !isRoomSession(session)) return false;
 
-      // 1. Precise Calendar Day Check: session start date (startTime with createdAt fallback only)
-      const sessionDateMs = getSessionDateMillis(session);
-      if (sessionDateMs === null) return false;
-
-      const dateMatches = isSameCalendarDay(sessionDateMs, selectedDate);
-      if (!dateMatches) return false;
-
-      // 2. Category Filter
-      const isBooking = !!session.bookingId || session.pricingType === 'booking';
-      const isPackageOrSub = !!session.isSubscribed || !!session.subscriptionId;
-
-      if (categoryFilter === 'guests' && (isBooking || isPackageOrSub)) return false;
-      if (categoryFilter === 'subscribers' && !isPackageOrSub) return false;
-      if (categoryFilter === 'rooms' && !isBooking && (!session.roomAssignment || !session.roomAssignment.roomId)) return false;
-
-      // 3. Search Query Filter
+      // 2. Search Query Filter
       if (searchLower) {
         // Resolve linked customer profile
         const sessionCust = 
@@ -164,9 +215,14 @@ export default function SessionHistory() {
           (sessionCust?.phone && sessionCust.phone.includes(cleanSearch));
 
         // Match by Room / Table / Notes
-        const matchesRoom = session.roomAssignment?.roomName?.toLowerCase().includes(searchLower);
-        const matchesTable = session.roomAssignment?.tableLabel?.toLowerCase().includes(searchLower);
-        const matchesNotes = session.notes && session.notes.toLowerCase().includes(searchLower);
+        const roomNameStr = (session.roomAssignment?.roomName || (session as any).roomName || '').toLowerCase();
+        const tableLabelStr = (session.roomAssignment?.tableLabel || (session as any).tableLabel || '').toLowerCase();
+        const tableNumberStr = session.roomAssignment?.tableNumber?.toString() || (session as any).tableNumber?.toString() || '';
+        const notesStr = (session.notes || '').toLowerCase();
+
+        const matchesRoom = roomNameStr.includes(searchLower);
+        const matchesTable = tableLabelStr.includes(searchLower) || (cleanSearch && tableNumberStr.includes(cleanSearch));
+        const matchesNotes = notesStr.includes(searchLower);
 
         if (!matchesCustomerId && !matchesName && !matchesPhone && !matchesRoom && !matchesTable && !matchesNotes) {
           return false;
@@ -175,48 +231,11 @@ export default function SessionHistory() {
 
       return true;
     }).sort((a, b) => {
-      const aTime = a.endTime ? toMillis(a.endTime) : (a.startTime ? toMillis(a.startTime) : toMillis(a.createdAt));
-      const bTime = b.endTime ? toMillis(b.endTime) : (b.startTime ? toMillis(b.startTime) : toMillis(b.createdAt));
+      const aTime = toMillis(a.startTime ?? a.createdAt);
+      const bTime = toMillis(b.startTime ?? b.createdAt);
       return bTime - aTime;
     });
-  }, [completedSessions, selectedDate, searchQuery, categoryFilter, customerMaps]);
-
-  // Daily Metrics
-  const dailyStats = useMemo(() => {
-    let totalRevenue = 0;
-    let totalTimeCost = 0;
-    let totalServicesCost = 0;
-    let guestCount = 0;
-    let subscriberCount = 0;
-    let roomCount = 0;
-
-    filteredSessions.forEach(s => {
-      totalRevenue += s.totalCost || 0;
-      totalTimeCost += s.timeCost || 0;
-      totalServicesCost += s.servicesCost || 0;
-
-      const isBooking = !!s.bookingId || s.pricingType === 'booking';
-      const isSub = !!s.isSubscribed || !!s.subscriptionId;
-
-      if (isBooking || (s.roomAssignment && s.roomAssignment.roomId)) {
-        roomCount++;
-      } else if (isSub) {
-        subscriberCount++;
-      } else {
-        guestCount++;
-      }
-    });
-
-    return {
-      totalRevenue,
-      totalTimeCost,
-      totalServicesCost,
-      totalCount: filteredSessions.length,
-      guestCount,
-      subscriberCount,
-      roomCount
-    };
-  }, [filteredSessions]);
+  }, [daySessions, categoryFilter, searchQuery, isGuestSession, isSubscriberSession, isRoomSession, customerMaps]);
 
   const handleDeleteSession = useCallback(async (id: string) => {
     if (window.confirm(t('sessions.deleteConfirm'))) {
@@ -458,27 +477,38 @@ export default function SessionHistory() {
 
       {/* ── Sessions List ── */}
       <div className="grid grid-cols-1 gap-4">
-        {filteredSessions.map((session) => (
-          <HistorySessionCard 
-            key={session.id}
-            session={session}
-            isRTL={isRTL}
-            onSelect={handleSelectSession}
-          />
-        ))}
-
-        {filteredSessions.length === 0 && (
+        {isLoadingDate && daySessions.length === 0 ? (
           <div className="py-24 text-center bg-white dark:bg-slate-900/10 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2.5rem]">
-            <div className="w-20 h-20 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center mx-auto mb-5 text-slate-400">
-              <CalendarDays className="w-10 h-10 opacity-40" />
-            </div>
-            <p className="text-slate-700 dark:text-slate-300 font-bold text-lg">
-              {searchQuery ? (isRTL ? 'لا توجد جلسات تطابق البحث' : 'No matching sessions found') : t('sessions.noSessionsFound')}
-            </p>
-            <p className="text-slate-400 text-sm mt-1.5">
-              {format(selectedDate, "PP", { locale: dateLocale })}
+            <RotateCw className="w-8 h-8 text-cyan-500 animate-spin mx-auto mb-3" />
+            <p className="text-slate-600 dark:text-slate-400 font-bold text-sm">
+              {isRTL ? 'جاري تحميل الجلسات...' : 'Loading sessions...'}
             </p>
           </div>
+        ) : (
+          <>
+            {filteredSessions.map((session) => (
+              <HistorySessionCard 
+                key={session.id}
+                session={session}
+                isRTL={isRTL}
+                onSelect={handleSelectSession}
+              />
+            ))}
+
+            {filteredSessions.length === 0 && (
+              <div className="py-24 text-center bg-white dark:bg-slate-900/10 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2.5rem]">
+                <div className="w-20 h-20 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center mx-auto mb-5 text-slate-400">
+                  <CalendarDays className="w-10 h-10 opacity-40" />
+                </div>
+                <p className="text-slate-700 dark:text-slate-300 font-bold text-lg">
+                  {searchQuery ? (isRTL ? 'لا توجد جلسات تطابق البحث' : 'No matching sessions found') : t('sessions.noSessionsFound')}
+                </p>
+                <p className="text-slate-400 text-sm mt-1.5">
+                  {format(selectedDate, "PP", { locale: dateLocale })}
+                </p>
+              </div>
+            )}
+          </>
         )}
       </div>
 

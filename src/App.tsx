@@ -49,6 +49,7 @@ export default function App() {
     user, setUser,
     setSessions,
     setCompletedSessions,
+    mergeCompletedSessions,
     setSettings,
     setAvailableServices,
     setBookings,
@@ -79,7 +80,7 @@ export default function App() {
         unstable_batchedUpdates(() => setSessions(sessions));
       }),
       sessionService.subscribeToRecentSessions((sessions) => {
-        unstable_batchedUpdates(() => setCompletedSessions(sessions));
+        unstable_batchedUpdates(() => mergeCompletedSessions(sessions));
       }),
       settingsService.subscribeToSettings((settings) => {
         unstable_batchedUpdates(() => setSettings(settings));
@@ -120,6 +121,7 @@ export default function App() {
     user, 
     setSessions, 
     setCompletedSessions, 
+    mergeCompletedSessions,
     setSettings, 
     setAvailableServices, 
     setBookings, 
