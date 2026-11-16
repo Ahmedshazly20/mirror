@@ -308,3 +308,117 @@ export function handleReprint(session: any) {
   printWindow.document.write(html);
   printWindow.document.close();
 }
+
+export function printProductOrderReceipt(payment: {
+  id?: string;
+  customerName?: string;
+  customerPhone?: string;
+  items?: { name: string; price: number; quantity: number }[];
+  subtotal?: number;
+  serviceDiscountTotal?: number;
+  amount: number;
+  paymentMethod?: 'cash' | 'instapay' | 'card';
+  date?: number;
+  notes?: string;
+}) {
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) return;
+
+  const dateStr = new Date(payment.date || Date.now()).toLocaleString('ar-EG');
+  const items = payment.items || [];
+  const subtotal = payment.subtotal ?? payment.amount;
+  const discount = payment.serviceDiscountTotal || 0;
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+      <meta charset="UTF-8">
+      <title>إيصال طلب سريع - Operix</title>
+      <style>
+        @page { size: 80mm auto; margin: 0; }
+        * { box-sizing: border-box; }
+        body {
+          font-family: 'Courier New', Courier, monospace;
+          width: 80mm; margin: 0 auto; padding: 8px 10px;
+          font-size: 13px; color: #000; background: #fff;
+        }
+        .center { text-align: center; }
+        .logo { font-size: 22px; font-weight: 900; letter-spacing: 2px; }
+        .sub { font-size: 11px; color: #555; margin-bottom: 2px; }
+        .dashes { border: none; border-top: 1px dashed #000; margin: 8px 0; }
+        .row { display: flex; justify-content: space-between; margin: 3px 0; font-size: 12px; }
+        .row.bold { font-weight: bold; font-size: 13px; }
+        .section-title { font-size: 11px; font-weight: bold; margin: 6px 0 3px; }
+        .service-row { display: flex; justify-content: space-between; font-size: 11px; color: #333; margin: 2px 0 2px 8px; }
+        .total-row { display: flex; justify-content: space-between; font-size: 18px; font-weight: 900; margin-top: 4px; }
+        .footer { text-align: center; font-size: 11px; margin-top: 14px; color: #444; line-height: 1.6; }
+        .type-badge { display: inline-block; border: 1px solid #000; padding: 1px 6px; font-size: 10px; border-radius: 3px; margin-top: 2px; }
+      </style>
+    </head>
+    <body>
+      <div class="center">
+        <div class="logo">Operix</div>
+        <div class="sub">إيصال مبيعات سريعة (بدون جلسة)</div>
+        <div class="sub">${dateStr}</div>
+      </div>
+
+      <hr class="dashes">
+
+      <div class="row bold">
+        <span>العميل</span>
+        <span>${payment.customerName || 'عميل سريع'}</span>
+      </div>
+      ${payment.customerPhone ? `<div class="row"><span>الهاتف</span><span dir="ltr">${payment.customerPhone}</span></div>` : ''}
+      <div class="row">
+        <span>النوع</span>
+        <span class="type-badge">طلب منتجات مباشر 🛍️</span>
+      </div>
+
+      <hr class="dashes">
+
+      <div class="section-title">▸ الأصناف</div>
+      ${items.map(item => `
+        <div class="service-row">
+          <span>${item.name} × ${item.quantity}</span>
+          <span>${(item.price * item.quantity).toFixed(2)} ج.م</span>
+        </div>
+      `).join('')}
+
+      <hr class="dashes">
+
+      ${discount > 0 ? `
+        <div class="row"><span>المجموع الفرعي</span><span>${subtotal.toFixed(2)} ج.م</span></div>
+        <div class="row" style="color:green"><span>الخصم</span><span>-${discount.toFixed(2)} ج.م</span></div>
+      ` : ''}
+
+      <div class="row">
+        <span>طريقة الدفع</span>
+        <span>${payment.paymentMethod === 'instapay' ? 'إنستا باي (InstaPay) ⚡' : 'كاش (Cash) 💵'}</span>
+      </div>
+
+      <div class="total-row">
+        <span>الإجمالي المدفوع</span>
+        <span>${payment.amount.toFixed(2)} ج.م</span>
+      </div>
+
+      <div class="footer">
+        ━━━━━━━━━━━━━━━━━━━━━<br>
+        شكراً لزيارتكم 🙏<br>
+        Operix System
+      </div>
+
+      <script>
+        window.onload = function() {
+          window.print();
+          window.onafterprint = function() { window.close(); };
+        };
+      </script>
+    </body>
+    </html>
+  `;
+
+  printWindow.document.write(html);
+  printWindow.document.close();
+}
+

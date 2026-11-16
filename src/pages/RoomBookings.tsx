@@ -18,7 +18,11 @@ import {
   Percent,
   Check,
   CreditCard,
-  Zap
+  Zap,
+  ArrowLeftRight,
+  Crown,
+  Loader2,
+  ShieldCheck
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
@@ -31,8 +35,14 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { useWorkspaceStore } from '../store';
 import { bookingService } from '../services/bookingService';
+import { customerService } from '../services/customerService';
 import { pricingService, DEFAULT_BOOKABLE_ROOMS } from '../services/pricingService';
 import { checkRoomConflictInMemory, isSamePhysicalRoom } from '../services/roomAvailabilityService';
+import {
+  findEligibleSubscriptionForDate,
+  formatPackageBalance,
+  getSubscriptionRemainingMinutes
+} from '../lib/utils-workspace';
 import { toast } from 'sonner';
 import { format, startOfToday } from 'date-fns';
 import { arSA, enUS } from 'date-fns/locale';
@@ -42,6 +52,7 @@ import { RoomCard } from '../features/bookings/components/RoomCard';
 import { BookingCard } from '../features/bookings/components/BookingCard';
 import { EditBookingModal } from '../features/bookings/components/EditBookingModal';
 import { CancelBookingModal } from '../features/bookings/components/CancelBookingModal';
+import { TransferRoomModal } from '../features/bookings/components/TransferRoomModal';
 import { Customer, Session, ServiceItem, Booking } from '../types';
 import { useActiveSessions } from '../hooks/useActiveSessions';
 import { sessionService } from '../services/sessionService';
@@ -53,7 +64,7 @@ import { ActiveAddServiceModal } from '../features/sessions/components/ActiveAdd
 export default function RoomBookings() {
   const { t, i18n } = useTranslation();
   const location = useLocation();
-  const { bookings, settings, rooms, user, customers } = useWorkspaceStore();
+  const { bookings, settings, rooms, user, customers, subscriptions } = useWorkspaceStore();
   const { sessions } = useActiveSessions();
   const calculateSessionCost = useWorkspaceStore(state => state.calculateSessionCost);
   const isOwner = user?.role === 'owner';
@@ -68,9 +79,11 @@ export default function RoomBookings() {
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [addServiceSessionId, setAddServiceSessionId] = useState<string | null>(null);
 
-  // Edit & Cancel Booking Modals State
+  // Edit, Cancel & Transfer Modals State
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
   const [cancellingBooking, setCancellingBooking] = useState<Booking | null>(null);
+  const [transferTargetBooking, setTransferTargetBooking] = useState<Booking | null>(null);
+  const [transferTargetSession, setTransferTargetSession] = useState<Session | null>(null);
 
   // Filter and Deduplicate Active Room Sessions
   const activeRoomSessions = useMemo(() => {
@@ -113,6 +126,8 @@ export default function RoomBookings() {
   const [bookingPaymentMethod, setBookingPaymentMethod] = useState<'cash' | 'instapay'>('cash');
   const [phoneError, setPhoneError] = useState<boolean>(false);
   const [customerSearchTerm, setCustomerSearchTerm] = useState<string>('');
+  const [remoteCustomers, setRemoteCustomers] = useState<Customer[]>([]);
+  const [isSearchingCustomer, setIsSearchingCustomer] = useState<boolean>(false);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState<boolean>(false);
 
   // Localization Utilities
@@ -126,20 +141,64 @@ export default function RoomBookings() {
     }
   }, [location.state]);
 
+  // Debounced targeted customer search fallback (matches NewSessionModal)
+  useEffect(() => {
+    const term = customerSearchTerm.trim();
+    if (!term) {
+      setRemoteCustomers([]);
+      setIsSearchingCustomer(false);
+      return;
+    }
+
+    const cleanTerm = term.replace(/^#/, '').trim();
+    const isPureDigits = /^\d+$/.test(cleanTerm);
+    if (term.length < 2 && !isPureDigits) {
+      setRemoteCustomers([]);
+      setIsSearchingCustomer(false);
+      return;
+    }
+
+    setIsSearchingCustomer(true);
+    const timer = setTimeout(async () => {
+      try {
+        const results = await customerService.searchCustomers(term, 8);
+        setRemoteCustomers(results);
+      } catch (e) {
+        console.warn('Error in booking customer search:', e);
+      } finally {
+        setIsSearchingCustomer(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [customerSearchTerm]);
+
   const validatePhone = useCallback((phone: string) => {
     return /^01[0125][0-9]{8}$/.test(phone) || phone.length >= 8;
   }, []);
 
-  // Filter customers for auto-suggest
+  // Filter customers for auto-suggest (Store + Remote fallback)
   const suggestedCustomers = useMemo(() => {
     if (!customerSearchTerm.trim()) return [];
     const term = customerSearchTerm.toLowerCase().trim();
-    return customers.filter(c => 
-      c.customerId.toString().includes(term) ||
-      c.name.toLowerCase().includes(term) ||
-      c.phone.includes(term)
-    ).slice(0, 5);
-  }, [customers, customerSearchTerm]);
+    const cleanTerm = term.replace(/^#/, '');
+    const map = new Map<string, Customer>();
+
+    customers.forEach(c => {
+      const matchId = c.customerId?.toString() === cleanTerm || c.customerId?.toString().includes(cleanTerm);
+      const matchName = c.name.toLowerCase().includes(term);
+      const matchPhone = c.phone.includes(cleanTerm) || c.phone.includes(term);
+      if (matchId || matchName || matchPhone) {
+        map.set(c.id, c);
+      }
+    });
+
+    remoteCustomers.forEach(c => {
+      map.set(c.id, c);
+    });
+
+    return Array.from(map.values()).slice(0, 8);
+  }, [customers, remoteCustomers, customerSearchTerm]);
 
   const handleSelectCustomer = (c: Customer) => {
     setSelectedCustomer(c);
@@ -147,6 +206,7 @@ export default function RoomBookings() {
     setPhoneNumber(c.phone);
     setCustomerSearchTerm(c.name);
     setShowCustomerDropdown(false);
+    setPhoneError(false);
   };
 
   const handleSetDurationPreset = (hours: number) => {
@@ -277,6 +337,28 @@ export default function RoomBookings() {
     );
   }, [selectedRoomData, bookingDurationHours, settings.pricingRules]);
 
+  // Evaluate whether the customer has an eligible subscription specifically on the requested booking date/time
+  const subscriptionEligibility = useMemo(() => {
+    if (!selectedTimes) {
+      return { subscription: null, status: 'none' as const };
+    }
+    return findEligibleSubscriptionForDate(
+      subscriptions,
+      {
+        customerId: selectedCustomer?.id,
+        phoneNumber: phoneNumber.trim(),
+        userName: userName.trim()
+      },
+      selectedTimes.start,
+      selectedTimes.end,
+      roomId || undefined
+    );
+  }, [subscriptions, selectedCustomer, phoneNumber, userName, selectedTimes, roomId]);
+
+  const isBookingCoveredBySub =
+    subscriptionEligibility.status === 'eligible' && !!subscriptionEligibility.subscription;
+  const effectiveTotalPrice = isBookingCoveredBySub ? 0 : calculatedTotalPrice;
+
   // Confirm booking callback handler
   const handleCreate = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -326,23 +408,34 @@ export default function RoomBookings() {
 
     try {
       setIsSubmitLoading(true);
-      const paid = parseFloat(paidAmount) || 0;
+      const paid = isBookingCoveredBySub ? 0 : (parseFloat(paidAmount) || 0);
+      const matchedSub = isBookingCoveredBySub ? subscriptionEligibility.subscription : null;
 
       await bookingService.createBooking({
         roomId,
+        roomName: selectedRoomData?.name,
         userName: userName.trim(),
         phoneNumber: phoneNumber.trim(),
-        customerId: selectedCustomer?.id,
+        customerId: selectedCustomer?.id || matchedSub?.customerId,
         startTime: selectedTimes.start,
         endTime: selectedTimes.end,
-        totalPrice: calculatedTotalPrice,
+        totalPrice: effectiveTotalPrice,
         paidAmount: paid,
         paymentMethod: paid > 0 ? bookingPaymentMethod : 'cash',
-        remainingAmount: Math.max(0, calculatedTotalPrice - paid),
-        paymentStatus: paid >= calculatedTotalPrice ? 'paid' : (paid > 0 ? 'partially_paid' : 'unpaid')
+        remainingAmount: Math.max(0, effectiveTotalPrice - paid),
+        paymentStatus: isBookingCoveredBySub
+          ? 'paid'
+          : (paid >= effectiveTotalPrice ? 'paid' : (paid > 0 ? 'partially_paid' : 'unpaid')),
+        isSubscribed: isBookingCoveredBySub,
+        subscriptionId: matchedSub?.id,
+        subscriptionType: matchedSub?.type
       });
 
-      toast.success(t('bookings.success'));
+      toast.success(
+        isBookingCoveredBySub
+          ? (isRTL ? 'تم تأكيد الحجز مجاناً ضمن اشتراك العميل بنجاح' : 'Subscribed booking confirmed without extra fees')
+          : t('bookings.success')
+      );
       
       // Clean components states
       setIsAdding(false);
@@ -373,7 +466,10 @@ export default function RoomBookings() {
     phoneNumber,
     selectedCustomer,
     paidAmount,
-    calculatedTotalPrice,
+    bookingPaymentMethod,
+    effectiveTotalPrice,
+    isBookingCoveredBySub,
+    subscriptionEligibility,
     roomStatuses,
     selectedRoomData,
     bookings,
@@ -508,37 +604,40 @@ export default function RoomBookings() {
     }
   }, [t]);
 
-  const handleStartSessionFromBooking = useCallback(async (booking: any, room?: any) => {
+  const handleStartSessionFromBooking = useCallback(async (booking: Booking, room?: any) => {
     // Check if session is already active in state
     const isAlreadyActive = sessions.some(s => (s.bookingId === booking.id || s.id === `booking_${booking.id}` || s.id === booking.activeSessionId) && s.status === 'active');
     if (isAlreadyActive || booking.status === 'active') {
-      toast.info(isRTL ? `الجلسة نشطة بالفعل في ${room?.name || 'الغرفة'}` : `Session is already active`);
+      toast.info(isRTL ? `الجلسة نشطة بالفعل في ${room?.name || booking.roomName || 'الغرفة'}` : `Session is already active`);
       setActiveTab('active_rooms');
       return;
     }
+
+    const resolvedRoomName = room?.name || booking.roomName || 'الغرفة';
+    const isBookingSubscribed = Boolean(booking.isSubscribed || booking.subscriptionId);
 
     try {
       await sessionService.startSession(
         booking.userName,
         booking.phoneNumber,
         'booking',
-        false,
+        isBookingSubscribed,
         true,
         {
           roomId: booking.roomId,
-          roomName: room?.name || 'الغرفة',
+          roomName: resolvedRoomName,
           tableId: room?.tables?.[0]?.id || 'tbl-1',
           tableNumber: room?.tables?.[0]?.number || 1,
-          tableLabel: room?.name || 'الغرفة',
+          tableLabel: resolvedRoomName,
           groupSize: room?.capacity || 1
         },
-        undefined,
+        booking.subscriptionId || undefined,
         booking.customerId,
         booking.id,
         booking.totalPrice,
         booking.paidAmount
       );
-      toast.success(isRTL ? `تم بدء الجلسة في ${room?.name || 'الغرفة'} بنجاح` : `Session started in ${room?.name || 'room'}`);
+      toast.success(isRTL ? `تم بدء الجلسة في ${resolvedRoomName} بنجاح` : `Session started in ${resolvedRoomName}`);
       setActiveTab('active_rooms');
     } catch (err) {
       toast.error(isRTL ? 'فشل بدء الجلسة' : 'Failed to start session');
@@ -743,7 +842,10 @@ export default function RoomBookings() {
                             className="rounded-xl border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950 focus:border-cyan-500 h-10"
                             required
                           />
-                          {selectedCustomer && (
+                          {isSearchingCustomer && (
+                            <Loader2 className={cn("w-4 h-4 animate-spin text-cyan-500 absolute top-3", isRTL ? "left-3" : "right-3")} />
+                          )}
+                          {!isSearchingCustomer && selectedCustomer && (
                             <Badge className="absolute left-2.5 top-2.5 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20 text-[10px]">
                               #{selectedCustomer.customerId}
                             </Badge>
@@ -752,21 +854,39 @@ export default function RoomBookings() {
 
                         {/* Customer Dropdown */}
                         {showCustomerDropdown && suggestedCustomers.length > 0 && (
-                          <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden max-h-48 overflow-y-auto">
-                            {suggestedCustomers.map(c => (
-                              <button
-                                key={c.id}
-                                type="button"
-                                onClick={() => handleSelectCustomer(c)}
-                                className="w-full px-3 py-2 text-right hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between text-xs transition-colors"
-                              >
-                                <div>
-                                  <p className="font-bold text-slate-900 dark:text-white">{c.name}</p>
-                                  <p className="text-[10px] text-slate-400" dir="ltr">{c.phone}</p>
-                                </div>
-                                <Badge variant="outline" className="text-[10px]">#{c.customerId}</Badge>
-                              </button>
-                            ))}
+                          <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden max-h-56 overflow-y-auto">
+                            {suggestedCustomers.map(c => {
+                              const hasValidSub = selectedTimes
+                                ? findEligibleSubscriptionForDate(
+                                    subscriptions,
+                                    { customerId: c.id, phoneNumber: c.phone, userName: c.name },
+                                    selectedTimes.start,
+                                    selectedTimes.end
+                                  ).status === 'eligible'
+                                : false;
+
+                              return (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() => handleSelectCustomer(c)}
+                                  className="w-full px-3 py-2 text-right hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center justify-between text-xs transition-colors"
+                                >
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <p className="font-bold text-slate-900 dark:text-white">{c.name}</p>
+                                      {hasValidSub && (
+                                        <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-0 text-[9px] px-1.5 py-0">
+                                          {isRTL ? 'مشترك نشط' : 'Subscribed'}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400" dir="ltr">{c.phone}</p>
+                                  </div>
+                                  <Badge variant="outline" className="text-[10px]">#{c.customerId}</Badge>
+                                </button>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -790,7 +910,83 @@ export default function RoomBookings() {
                         {phoneError && <p className="text-[10px] text-rose-500 font-black">{t('sessions.invalidPhone')}</p>}
                       </div>
 
-                      {/* Professional Paid Amount (Deposit) Section */}
+                      {/* Subscription Coverage Detection Banner */}
+                      {isBookingCoveredBySub && subscriptionEligibility.subscription && (
+                        <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-500/10 via-violet-500/5 to-cyan-500/10 border border-emerald-500/30 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 font-black text-xs">
+                              <Crown className="w-4 h-4 text-emerald-500 shrink-0" />
+                              <span>
+                                {isRTL ? 'مشمول ضمن اشتراك نشط' : 'Covered by Active Subscription'}
+                              </span>
+                            </div>
+                            <Badge className="bg-emerald-500 text-white border-0 text-[10px] font-black">
+                              {subscriptionEligibility.subscription.type === 'package'
+                                ? (isRTL ? 'باقة ساعات' : 'Hours Package')
+                                : (isRTL ? 'اشتراك شهري' : 'Monthly Plan')}
+                            </Badge>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                            {subscriptionEligibility.subscription.type === 'package' ? (
+                              <span>
+                                {isRTL ? 'الرصيد المتاح:' : 'Available Balance:'}{' '}
+                                <strong className="font-mono text-emerald-600 dark:text-emerald-400">
+                                  {formatPackageBalance(getSubscriptionRemainingMinutes(subscriptionEligibility.subscription))}
+                                </strong>
+                              </span>
+                            ) : (
+                              <span>
+                                {isRTL ? 'صالح حتى:' : 'Valid Until:'}{' '}
+                                <strong className="font-mono">
+                                  {subscriptionEligibility.subscription.endDate
+                                    ? format(new Date(subscriptionEligibility.subscription.endDate), 'dd MMM yyyy', { locale: dateLocale })
+                                    : (isRTL ? 'مفتوح' : 'No Expiry')}
+                                </strong>
+                              </span>
+                            )}
+                            {subscriptionEligibility.subscription.roomName && (
+                              <span className="text-[10px] text-violet-600 dark:text-violet-400 font-bold">
+                                ({subscriptionEligibility.subscription.roomName})
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/60 border border-emerald-500/15 text-[11px] text-emerald-800 dark:text-emerald-300 flex items-start gap-1.5">
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                            <span>
+                              {isRTL
+                                ? 'لا توجد رسوم حجز إضافية. لن يتم خصم أي ساعات من الباقة عند الحجز — يتم الخصم عند تشغيل الجلسة الفعلية فقط.'
+                                : 'No extra booking charges. Package hours are NOT deducted on booking creation — only when the session runs.'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {subscriptionEligibility.status === 'ineligible' && (
+                        <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="font-bold">
+                              {isRTL ? 'اشتراك العميل غير صالح لهذا الموعد' : 'Subscription not eligible on selected date'}
+                            </p>
+                            <p className="text-[11px] mt-0.5 opacity-90">
+                              {subscriptionEligibility.reason === 'expired'
+                                ? (isRTL ? 'تاريخ الحجز يقع بعد انتهاء صلاحية الاشتراك — سيتم تطبيق السعر العادي.' : 'Booking date is after subscription expiry — standard pricing applies.')
+                                : subscriptionEligibility.reason === 'not_started'
+                                  ? (isRTL ? 'الاشتراك لم يبدأ في هذا التاريخ بعد — سيتم تطبيق السعر العادي.' : 'Subscription has not started yet on this date — standard pricing applies.')
+                                  : subscriptionEligibility.reason === 'day_not_allowed'
+                                    ? (isRTL ? 'هذا اليوم غير مشمول ضمن أيام الاشتراك — سيتم تطبيق السعر العادي.' : 'Selected weekday is not covered by plan — standard pricing applies.')
+                                    : subscriptionEligibility.reason === 'exhausted'
+                                      ? (isRTL ? 'رصيد ساعات الباقة مستنفد (0 ساعة متبقية) — سيتم تطبيق السعر العادي.' : 'Package balance is exhausted — standard pricing applies.')
+                                      : (isRTL ? 'الاشتراك غير نشط — سيتم تطبيق السعر العادي.' : 'Subscription is inactive — standard pricing applies.')}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Professional Paid Amount (Deposit) Section (Only when NOT covered by subscription) */}
+                      {!isBookingCoveredBySub && (
                       <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-50 via-slate-50 to-emerald-50/30 dark:from-slate-950 dark:via-slate-900 dark:to-emerald-950/20 border border-slate-200/90 dark:border-slate-800 space-y-3.5 shadow-sm">
                         <div className="flex items-center justify-between">
                           <Label className="text-xs font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
@@ -800,11 +996,11 @@ export default function RoomBookings() {
                           {parseFloat(paidAmount) > 0 && (
                             <Badge variant="outline" className={cn(
                               "text-[10px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1",
-                              parseFloat(paidAmount) >= calculatedTotalPrice
+                              parseFloat(paidAmount) >= effectiveTotalPrice
                                 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
                                 : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
                             )}>
-                              {parseFloat(paidAmount) >= calculatedTotalPrice ? (
+                              {parseFloat(paidAmount) >= effectiveTotalPrice ? (
                                 <>
                                   <Check className="w-3 h-3 text-emerald-500" />
                                   {isRTL ? 'مدفوع بالكامل' : 'Fully Paid'}
@@ -831,7 +1027,7 @@ export default function RoomBookings() {
                           <Input 
                             type="number"
                             min="0"
-                            max={calculatedTotalPrice || undefined}
+                            max={effectiveTotalPrice || undefined}
                             placeholder={isRTL ? "أدخل قيمة العربون (اختياري)..." : "Enter advance amount..."}
                             value={paidAmount}
                             onChange={(e) => setPaidAmount(e.target.value)}
@@ -850,7 +1046,7 @@ export default function RoomBookings() {
                         </div>
 
                         {/* Quick Deposit Preset Chips */}
-                        {calculatedTotalPrice > 0 && (
+                        {effectiveTotalPrice > 0 && (
                           <div className="space-y-1.5 pt-1">
                             <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
                               <span>{isRTL ? 'خيارات دفع سريعة:' : 'Quick Presets:'}</span>
@@ -882,43 +1078,43 @@ export default function RoomBookings() {
                               {/* 25% */}
                               <button
                                 type="button"
-                                onClick={() => setPaidAmount(Math.round(calculatedTotalPrice * 0.25).toString())}
+                                onClick={() => setPaidAmount(Math.round(effectiveTotalPrice * 0.25).toString())}
                                 className={cn(
                                   "py-1 px-1.5 rounded-lg border text-[10px] font-black transition-all text-center",
-                                  parseFloat(paidAmount) === Math.round(calculatedTotalPrice * 0.25)
+                                  parseFloat(paidAmount) === Math.round(effectiveTotalPrice * 0.25)
                                     ? "bg-emerald-500 text-white border-emerald-500 shadow-sm"
                                     : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                                 )}
                               >
-                                25% ({Math.round(calculatedTotalPrice * 0.25)})
+                                25% ({Math.round(effectiveTotalPrice * 0.25)})
                               </button>
 
                               {/* 50% */}
                               <button
                                 type="button"
-                                onClick={() => setPaidAmount(Math.round(calculatedTotalPrice * 0.5).toString())}
+                                onClick={() => setPaidAmount(Math.round(effectiveTotalPrice * 0.5).toString())}
                                 className={cn(
                                   "py-1 px-1.5 rounded-lg border text-[10px] font-black transition-all text-center",
-                                  parseFloat(paidAmount) === Math.round(calculatedTotalPrice * 0.5)
+                                  parseFloat(paidAmount) === Math.round(effectiveTotalPrice * 0.5)
                                     ? "bg-emerald-500 text-white border-emerald-500 shadow-sm"
                                     : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                                 )}
                               >
-                                50% ({Math.round(calculatedTotalPrice * 0.5)})
+                                50% ({Math.round(effectiveTotalPrice * 0.5)})
                               </button>
 
                               {/* 100% (Full payment) */}
                               <button
                                 type="button"
-                                onClick={() => setPaidAmount(calculatedTotalPrice.toString())}
+                                onClick={() => setPaidAmount(effectiveTotalPrice.toString())}
                                 className={cn(
                                   "py-1 px-1.5 rounded-lg border text-[10px] font-black transition-all text-center",
-                                  parseFloat(paidAmount) === calculatedTotalPrice
+                                  parseFloat(paidAmount) === effectiveTotalPrice
                                     ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
                                     : "bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/60 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
                                 )}
                               >
-                                {isRTL ? 'الكل' : '100%'} ({calculatedTotalPrice})
+                                {isRTL ? 'الكل' : '100%'} ({effectiveTotalPrice})
                               </button>
                             </div>
                           </div>
@@ -964,6 +1160,7 @@ export default function RoomBookings() {
                           </div>
                         )}
                       </div>
+                      )}
 
                       {/* Financial summary breakdown */}
                       <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2.5">
@@ -982,11 +1179,20 @@ export default function RoomBookings() {
                         {/* Total Bill Row */}
                         <div className="flex justify-between items-center text-sm font-black">
                           <span className="text-slate-800 dark:text-slate-200">{t('sessions.totalBill')}:</span>
-                          <span className="text-cyan-500">{calculatedTotalPrice} {t('common.currency')}</span>
+                          <div className="flex items-center gap-2">
+                            {isBookingCoveredBySub && calculatedTotalPrice > 0 && (
+                              <span className="text-xs line-through text-slate-400 font-semibold">
+                                {calculatedTotalPrice} {t('common.currency')}
+                              </span>
+                            )}
+                            <span className={isBookingCoveredBySub ? "text-emerald-500" : "text-cyan-500"}>
+                              {effectiveTotalPrice} {t('common.currency')}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Advance Paid Row */}
-                        {parseFloat(paidAmount) > 0 && (
+                        {!isBookingCoveredBySub && parseFloat(paidAmount) > 0 && (
                           <div className="flex justify-between items-center text-xs font-bold text-emerald-600 dark:text-emerald-400">
                             <span>{isRTL ? 'المسدد مقدمًا (عربون):' : 'Paid Advance:'}</span>
                             <span>- {parseFloat(paidAmount) || 0} {t('common.currency')}</span>
@@ -998,11 +1204,13 @@ export default function RoomBookings() {
                           <span className="text-slate-600 dark:text-slate-400">{isRTL ? 'المتبقي عند الحضور:' : 'Remaining Balance:'}</span>
                           <span className={cn(
                             "font-black text-sm",
-                            Math.max(0, calculatedTotalPrice - (parseFloat(paidAmount) || 0)) === 0
+                            (isBookingCoveredBySub || Math.max(0, effectiveTotalPrice - (parseFloat(paidAmount) || 0)) === 0)
                               ? "text-emerald-500"
                               : "text-amber-500"
                           )}>
-                            {Math.max(0, calculatedTotalPrice - (parseFloat(paidAmount) || 0))} {t('common.currency')}
+                            {isBookingCoveredBySub
+                              ? (isRTL ? '0 (مشمول بالاشتراك)' : '0 (Subscribed)')
+                              : `${Math.max(0, effectiveTotalPrice - (parseFloat(paidAmount) || 0))} ${t('common.currency')}`}
                           </span>
                         </div>
                       </div>
@@ -1136,6 +1344,7 @@ export default function RoomBookings() {
                 onEnd={handleOpenReview}
                 onAddService={handleOpenAddService}
                 onRemoveService={handleRemoveService}
+                onTransferRoom={(s) => setTransferTargetSession(s)}
                 onDelete={handleDeleteSession}
               />
             ))}
@@ -1168,6 +1377,7 @@ export default function RoomBookings() {
                   room={room}
                   onDelete={handleDelete}
                   onEdit={(b) => setEditingBooking(b)}
+                  onTransferRoom={(b) => setTransferTargetBooking(b)}
                   onCancel={(b) => setCancellingBooking(b)}
                   onStartSession={handleStartSessionFromBooking}
                   showDelete={isOwner}
@@ -1203,6 +1413,28 @@ export default function RoomBookings() {
           onClose={() => setCancellingBooking(null)}
           booking={cancellingBooking}
           room={roomsList.find(r => r.id === cancellingBooking.roomId)}
+        />
+      )}
+
+      {/* Transfer Booking Room Modal */}
+      {transferTargetBooking && (
+        <TransferRoomModal
+          isOpen={!!transferTargetBooking}
+          onClose={() => setTransferTargetBooking(null)}
+          mode="booking"
+          booking={transferTargetBooking}
+          rooms={roomsList}
+        />
+      )}
+
+      {/* Transfer Active Session Room Modal */}
+      {transferTargetSession && (
+        <TransferRoomModal
+          isOpen={!!transferTargetSession}
+          onClose={() => setTransferTargetSession(null)}
+          mode="session"
+          session={transferTargetSession}
+          rooms={roomsList}
         />
       )}
 

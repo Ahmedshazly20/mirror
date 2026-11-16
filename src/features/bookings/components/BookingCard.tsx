@@ -11,7 +11,9 @@ import {
   AlertCircle,
   Edit,
   Ban,
-  Radio
+  Radio,
+  ArrowLeftRight,
+  Crown
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { format } from 'date-fns';
@@ -28,6 +30,7 @@ interface BookingCardProps {
   onDelete: (id: string) => void;
   onCancel?: (booking: Booking) => void;
   onEdit?: (booking: Booking) => void;
+  onTransferRoom?: (booking: Booking) => void;
   onStartSession?: (booking: Booking, room?: Room) => void;
   showDelete: boolean;
 }
@@ -38,6 +41,7 @@ export const BookingCard = React.memo(function BookingCard({
   onDelete,
   onCancel,
   onEdit,
+  onTransferRoom,
   onStartSession,
   showDelete
 }: BookingCardProps) {
@@ -51,6 +55,9 @@ export const BookingCard = React.memo(function BookingCard({
   const isCancelled = booking.status === 'cancelled';
   const isActive = booking.status === 'active';
   const isCompleted = booking.status === 'completed';
+  const isSubscribedBooking = Boolean(booking.isSubscribed || booking.subscriptionId);
+  const displayRoomName = room?.name || booking.roomName || t('bookings.unknown');
+  const wasTransferred = Boolean(booking.originalRoomName && booking.originalRoomName !== displayRoomName);
 
   const bookingDate = new Date(booking.startTime);
   const formattedDateStr = isNaN(bookingDate.getTime()) ? '---' : format(bookingDate, 'PP', { locale: dateLocale });
@@ -116,7 +123,7 @@ export const BookingCard = React.memo(function BookingCard({
             <div className="flex items-center gap-1.5 flex-wrap">
               <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 leading-tight truncate">
                 <DoorOpen className="w-4 h-4 text-cyan-500 shrink-0" />
-                <span className="truncate">{room?.name || t('bookings.unknown')}</span>
+                <span className="truncate">{displayRoomName}</span>
               </h3>
 
               {/* Status Badge */}
@@ -141,6 +148,18 @@ export const BookingCard = React.memo(function BookingCard({
                   {isRTL ? 'حان موعد البدء' : 'Ready to Start'}
                 </Badge>
               )}
+              {isSubscribedBooking && (
+                <Badge variant="outline" className="text-[10px] font-extrabold bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/25 flex items-center gap-1">
+                  <Crown className="w-3 h-3" />
+                  {isRTL ? 'مشمول بالاشتراك' : 'Subscribed'}
+                </Badge>
+              )}
+              {wasTransferred && (
+                <Badge variant="outline" className="text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/25 flex items-center gap-1">
+                  <ArrowLeftRight className="w-2.5 h-2.5" />
+                  {isRTL ? `نُقل من ${booking.originalRoomName}` : `From ${booking.originalRoomName}`}
+                </Badge>
+              )}
             </div>
 
             <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
@@ -154,6 +173,19 @@ export const BookingCard = React.memo(function BookingCard({
           </div>
           
           <div className="flex items-center gap-1">
+            {/* Transfer Room Button - Permitted for any non-cancelled/non-completed booking (even if past start or active) */}
+            {!isCancelled && !isCompleted && onTransferRoom && (
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => onTransferRoom(booking)}
+                title={isRTL ? 'نقل لغرفة متاحة أخرى' : 'Transfer to another room'}
+                className="text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500/10 transition-all duration-200 w-8 h-8 rounded-xl shrink-0"
+              >
+                <ArrowLeftRight className="w-4 h-4" />
+              </Button>
+            )}
+
             {/* Edit Button - Only permitted BEFORE start time and not cancelled */}
             {!isCancelled && onEdit && (
               <Button 
@@ -222,25 +254,29 @@ export const BookingCard = React.memo(function BookingCard({
               <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
               <span>{formattedDateStr}</span>
             </div>
-            {booking.paidAmount !== undefined && (
+            {(booking.paidAmount !== undefined || isSubscribedBooking) && (
               <Badge 
                 variant="outline" 
                 className={cn(
                   "text-[10px] font-bold px-2 py-0.5 rounded-md",
                   isCancelled
                     ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
-                    : booking.paidAmount >= booking.totalPrice && booking.totalPrice > 0
+                    : isSubscribedBooking
                     ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
-                    : booking.paidAmount > 0
+                    : (booking.paidAmount || 0) >= booking.totalPrice && booking.totalPrice > 0
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                    : (booking.paidAmount || 0) > 0
                     ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
                     : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700"
                 )}
               >
                 {isCancelled
                   ? (isRTL ? 'عربون ملغي/ضائع' : 'Lost Deposit')
-                  : booking.paidAmount >= booking.totalPrice && booking.totalPrice > 0
+                  : isSubscribedBooking
+                  ? (isRTL ? 'مشمول بالاشتراك' : 'Subscription')
+                  : (booking.paidAmount || 0) >= booking.totalPrice && booking.totalPrice > 0
                   ? (isRTL ? 'مدفوع بالكامل' : 'Paid')
-                  : booking.paidAmount > 0
+                  : (booking.paidAmount || 0) > 0
                   ? (isRTL ? `عربون: ${booking.paidAmount}` : `Deposit: ${booking.paidAmount}`)
                   : (isRTL ? 'غير مسدد' : 'Unpaid')}
               </Badge>
@@ -252,10 +288,10 @@ export const BookingCard = React.memo(function BookingCard({
               <span>{formattedStartStr} - {formattedEndStr}</span>
             </div>
             <div className="text-right flex flex-col items-end">
-              <span className="font-black text-slate-900 dark:text-white">
+              <span className={cn("font-black", isSubscribedBooking ? "text-emerald-600 dark:text-emerald-400" : "text-slate-900 dark:text-white")}>
                 {booking.totalPrice} {t('common.currency')}
               </span>
-              {!isCancelled && booking.paidAmount !== undefined && booking.paidAmount > 0 && booking.paidAmount < booking.totalPrice && (
+              {!isCancelled && !isSubscribedBooking && booking.paidAmount !== undefined && booking.paidAmount > 0 && booking.paidAmount < booking.totalPrice && (
                 <span className="text-[10px] font-bold text-amber-500">
                   {isRTL ? `المتبقي: ${booking.totalPrice - booking.paidAmount}` : `Due: ${booking.totalPrice - booking.paidAmount}`} {t('common.currency')}
                 </span>
@@ -263,18 +299,35 @@ export const BookingCard = React.memo(function BookingCard({
             </div>
           </div>
 
-          {/* Quick Start Room button if not started/cancelled */}
-          {!isCancelled && !isActive && !isCompleted && onStartSession && (
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => onStartSession(booking, room)}
-                className="w-full h-8 rounded-xl font-bold text-xs bg-cyan-500/10 hover:bg-cyan-500 hover:text-white text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 transition-all flex items-center justify-center gap-1.5"
-              >
-                <DoorOpen className="w-3.5 h-3.5" />
-                <span>{isRTL ? 'بدء الجلسة في الغرفة الآن' : 'Start Room Session Now'}</span>
-              </Button>
+          {/* Quick Actions Footer if not started/cancelled */}
+          {!isCancelled && !isCompleted && (onStartSession || onTransferRoom) && (
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
+              {!isActive && onStartSession && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => onStartSession(booking, room)}
+                  className="flex-1 h-8 rounded-xl font-bold text-xs bg-cyan-500/10 hover:bg-cyan-500 hover:text-white text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 transition-all flex items-center justify-center gap-1.5"
+                >
+                  <DoorOpen className="w-3.5 h-3.5" />
+                  <span>{isRTL ? 'بدء الجلسة الآن' : 'Start Session'}</span>
+                </Button>
+              )}
+              {onTransferRoom && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onTransferRoom(booking)}
+                  className={cn(
+                    "h-8 rounded-xl font-bold text-xs border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-cyan-500 hover:text-cyan-600 transition-all flex items-center justify-center gap-1.5",
+                    isActive || !onStartSession ? "w-full" : "px-3"
+                  )}
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  <span>{isRTL ? 'نقل غرفة' : 'Transfer'}</span>
+                </Button>
+              )}
             </div>
           )}
         </div>

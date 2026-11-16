@@ -24,11 +24,14 @@ export const formatSessionForExport = (sessions: any[], t: any) => {
   return sessions.map(s => {
     const paid = s.paidAmount !== undefined ? s.paidAmount : (s.paymentStatus === 'unpaid' ? 0 : s.totalCost);
     const remaining = s.remainingAmount !== undefined ? s.remainingAmount : Math.max(0, s.totalCost - paid);
+    const actualRoomName = s.roomAssignment?.roomName || '';
+    const originalRoomName = s.originalRoomAssignment?.roomName || (s.packageRoomName && s.packageRoomName !== actualRoomName ? s.packageRoomName : '');
     return {
       [t('sessions.customer')]: s.userName,
       [t('common.phone')]: s.phoneNumber || '',
       [t('common.date')]: new Date(s.startTime?.seconds ? s.startTime.seconds * 1000 : s.startTime).toLocaleDateString('ar-EG'),
-      [t('common.rooms')]: s.roomAssignment?.roomName || '',
+      [t('common.rooms')]: actualRoomName,
+      'الغرفة الأصلية (قبل النقل / الباقة)': originalRoomName || '---',
       [t('rooms.tables')]: s.roomAssignment?.tableLabel || s.roomAssignment?.tableNumber || '',
       [t('sessions.duration')]: Math.floor(s.duration || 0) + ' ' + t('common.minutes'),
       [t('sessions.timeCost')]: s.timeCost,
@@ -72,5 +75,19 @@ export const formatExpenseForExport = (expenses: any[], t: any) => {
     [t('common.amount')]: e.amount,
     [t('common.date')]: new Date(e.date).toLocaleDateString('ar-EG'),
     [t('common.notes')]: e.notes || ''
+  }));
+};
+
+export const formatProductOrderForExport = (orders: any[]) => {
+  return orders.map(p => ({
+    'التاريخ': new Date(p.date || p.createdAt).toLocaleString('ar-EG'),
+    'العميل': p.customerName || 'عميل سريع',
+    'الهاتف': p.customerPhone || '---',
+    'الأصناف': (p.items || []).map((i: any) => `${i.name} ×${i.quantity}`).join('، '),
+    'المجموع الفرعي': p.subtotal ?? p.amount,
+    'الخصم': p.serviceDiscountTotal || 0,
+    'الإجمالي المحصل': p.amount,
+    'طريقة الدفع': p.paymentMethod === 'instapay' ? 'InstaPay' : 'Cash',
+    'ملاحظات': p.notes || ''
   }));
 };

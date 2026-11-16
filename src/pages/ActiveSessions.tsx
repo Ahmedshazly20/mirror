@@ -8,6 +8,7 @@ import { inventoryService } from '../services/inventoryService';
 import { ActiveSessionCard } from '../features/sessions/components/ActiveSessionCard';
 import { ActiveSessionReviewModal } from '../features/sessions/components/ActiveSessionReviewModal';
 import { ActiveAddServiceModal } from '../features/sessions/components/ActiveAddServiceModal';
+import { TransferRoomModal } from '../features/bookings/components/TransferRoomModal';
 import { toast } from 'sonner';
 import { Session, ServiceItem } from '../types';
 import { cn } from '@/lib/utils';
@@ -17,12 +18,14 @@ export default function ActiveSessions() {
   const isRTL = i18n.language.startsWith('ar');
   const { sessions, loading, error } = useActiveSessions();
   const calculateSessionCost = useWorkspaceStore(state => state.calculateSessionCost);
+  const rooms = useWorkspaceStore(state => state.rooms);
 
   const [filterType, setFilterType] = useState<'all' | 'rooms' | 'space'>('all');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [isReviewOpen, setIsReviewOpen] = useState(false);
 
   const [addServiceSessionId, setAddServiceSessionId] = useState<string | null>(null);
+  const [transferSession, setTransferSession] = useState<Session | null>(null);
 
   const deduplicatedSessions = useMemo(() => {
     const seenBookingIds = new Set<string>();
@@ -76,6 +79,14 @@ export default function ActiveSessions() {
 
   const handleCloseAddService = useCallback(() => {
     setAddServiceSessionId(null);
+  }, []);
+
+  const handleOpenTransfer = useCallback((session: Session) => {
+    setTransferSession(session);
+  }, []);
+
+  const handleCloseTransfer = useCallback(() => {
+    setTransferSession(null);
   }, []);
 
   const handleAddService = useCallback(async (sessionId: string, service: ServiceItem, quantity: number) => {
@@ -261,6 +272,7 @@ export default function ActiveSessions() {
             onEnd={handleOpenReview}
             onAddService={handleOpenAddService}
             onRemoveService={handleRemoveService}
+            onTransferRoom={handleOpenTransfer}
             onDelete={handleDeleteSession}
           />
         ))}
@@ -285,6 +297,14 @@ export default function ActiveSessions() {
         session={selectedSession}
         isOpen={isReviewOpen}
         onClose={handleCloseReview}
+      />
+
+      <TransferRoomModal
+        isOpen={transferSession !== null}
+        onClose={handleCloseTransfer}
+        mode="session"
+        session={transferSession}
+        rooms={rooms}
       />
     </div>
   );

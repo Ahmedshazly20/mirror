@@ -20,9 +20,10 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { Booking, Room } from '../../../types';
-import { pricingService, mapRoomToPricingKey } from '../../../services/pricingService';
+import { pricingService } from '../../../services/pricingService';
 import { bookingService } from '../../../services/bookingService';
 import { checkRoomConflictInMemory } from '../../../services/roomAvailabilityService';
+import { findEligibleSubscriptionForDate } from '../../../lib/utils-workspace';
 import { useWorkspaceStore } from '../../../store';
 import { toast } from 'sonner';
 
@@ -43,7 +44,7 @@ export function EditBookingModal({
 }: EditBookingModalProps) {
   const { t, i18n } = useTranslation();
   const isRTL = i18n.language.startsWith('ar');
-  const { sessions, settings } = useWorkspaceStore();
+  const { sessions, settings, subscriptions } = useWorkspaceStore();
 
   const [dateStr, setDateStr] = useState('');
   const [startTimeStr, setStartTimeStr] = useState('10:00');
@@ -96,11 +97,34 @@ export function EditBookingModal({
     };
   }, [dateStr, startTimeStr, endTimeStr]);
 
+  // Evaluate subscription validity on the updated booking slot
+  const subscriptionEligibility = useMemo(() => {
+    if (!booking || !startTimestamp || !endTimestamp || isTimeInvalid) {
+      return { subscription: null, status: 'none' as const };
+    }
+    return findEligibleSubscriptionForDate(
+      subscriptions,
+      {
+        customerId: booking.customerId,
+        phoneNumber: phoneNumber.trim(),
+        userName: userName.trim()
+      },
+      startTimestamp,
+      endTimestamp,
+      selectedRoomId
+    );
+  }, [booking, subscriptions, phoneNumber, userName, startTimestamp, endTimestamp, isTimeInvalid, selectedRoomId]);
+
+  const isCoveredBySubscription =
+    subscriptionEligibility.status === 'eligible' && !!subscriptionEligibility.subscription;
+
   // Calculated updated price
-  const calculatedPrice = useMemo(() => {
+  const baseCalculatedPrice = useMemo(() => {
     if (!selectedRoom || durationHours <= 0) return 0;
     return pricingService.calculateRoomPrice(selectedRoom, durationHours, settings.pricingRules);
   }, [selectedRoom, durationHours, settings.pricingRules]);
+
+  const calculatedPrice = isCoveredBySubscription ? 0 : baseCalculatedPrice;
 
   // Overlap check against both bookings and active sessions
   const conflict = useMemo(() => {
@@ -145,10 +169,13 @@ export function EditBookingModal({
 
     setIsLoading(true);
     try {
-      const newPaid = booking.paidAmount || 0;
-      const newRemaining = Math.max(0, calculatedPrice - newPaid);
+      const matchedSub = isCoveredBySubscription ? subscriptionEligibility.subscription : null;
+      const newPaid = isCoveredBySubscription ? 0 : (booking.paidAmount || 0);
+      const newRemaining = isCoveredBySubscription ? 0 : Math.max(0, calculatedPrice - newPaid);
       let newPaymentStatus = booking.paymentStatus;
-      if (newPaid >= calculatedPrice && calculatedPrice > 0) {
+      if (isCoveredBySubscription) {
+        newPaymentStatus = 'paid';
+      } else if (newPaid >= calculatedPrice && calculatedPrice > 0) {
         newPaymentStatus = 'paid';
       } else if (newPaid > 0) {
         newPaymentStatus = 'partially_paid';
@@ -158,13 +185,18 @@ export function EditBookingModal({
 
       await bookingService.updateBooking(booking.id, {
         roomId: selectedRoomId,
+        roomName: selectedRoom?.name,
         userName: userName.trim(),
         phoneNumber: phoneNumber.trim(),
         startTime: startTimestamp,
         endTime: endTimestamp,
         totalPrice: calculatedPrice,
+        paidAmount: newPaid,
         remainingAmount: newRemaining,
         paymentStatus: newPaymentStatus,
+        isSubscribed: isCoveredBySubscription,
+        subscriptionId: matchedSub?.id || null as any,
+        subscriptionType: matchedSub?.type || null as any,
         notes: notes.trim(),
       });
 
@@ -277,19 +309,53 @@ export function EditBookingModal({
             </div>
 
             {/* Duration and Price Preview */}
-            <div className="p-3 bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 rounded-2xl flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-cyan-500" />
-                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                  {isRTL ? `المدة: ${durationHours.toFixed(1)} ساعة` : `Duration: ${durationHours.toFixed(1)} hrs`}
-                </span>
+            <div className={cn(
+              "p-3 border rounded-2xl space-y-2",
+              isCoveredBySubscription
+                ? "bg-violet-500/10 border-violet-500/30"
+                : "bg-cyan-500/5 dark:bg-cyan-500/10 border-cyan-500/20"
+            )}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className={cn("w-4 h-4", isCoveredBySubscription ? "text-violet-500" : "text-cyan-500")} />
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    {isRTL ? `المدة: ${durationHours.toFixed(1)} ساعة` : `Duration: ${durationHours.toFixed(1)} hrs`}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-slate-500 mr-1">{isRTL ? 'الإجمالي الجديد:' : 'New Total:'}</span>
+                  <span className={cn(
+                    "text-sm font-black",
+                    isCoveredBySubscription ? "text-violet-600 dark:text-violet-400" : "text-cyan-600 dark:text-cyan-400"
+                  )}>
+                    {isCoveredBySubscription
+                      ? (isRTL ? '0 ج.م — مشمول بالاشتراك' : '0 EGP — Subscription')
+                      : `${calculatedPrice} ${isRTL ? 'ج.م' : 'EGP'}`}
+                  </span>
+                </div>
               </div>
-              <div className="text-right">
-                <span className="text-xs text-slate-500 mr-1">{isRTL ? 'الإجمالي الجديد:' : 'New Total:'}</span>
-                <span className="text-sm font-black text-cyan-600 dark:text-cyan-400">
-                  {calculatedPrice} {isRTL ? 'ج.م' : 'EGP'}
-                </span>
-              </div>
+
+              {isCoveredBySubscription && (
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-violet-700 dark:text-violet-300">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {isRTL
+                      ? 'الموعد الجديد مشمول بصلاحية الاشتراك — بدون رسوم حجز إضافية.'
+                      : 'Updated slot is covered by active subscription — no extra booking charge.'}
+                  </span>
+                </div>
+              )}
+
+              {!isCoveredBySubscription && subscriptionEligibility.status === 'ineligible' && (
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {subscriptionEligibility.reason || (isRTL
+                      ? 'الاشتراك غير ساري في هذا الموعد — يُطبق السعر القياسي.'
+                      : 'Subscription is not valid for this slot — standard rate applies.')}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Conflict Alert */}

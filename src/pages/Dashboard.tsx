@@ -8,7 +8,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Plus,
-  CalendarDays
+  CalendarDays,
+  ShoppingBag
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,7 +25,8 @@ export default function Dashboard() {
     subscriptions, 
     bookings, 
     payments, 
-    setIsNewSessionModalOpen 
+    setIsNewSessionModalOpen,
+    setIsQuickOrderModalOpen
   } = useWorkspaceStore();
   
   const isRTL = i18n.language.startsWith('ar');
@@ -260,6 +262,16 @@ export default function Dashboard() {
               <span>{t('dashboard.renewSub')}</span>
             </button>
             
+            <button 
+              onClick={() => setIsQuickOrderModalOpen(true)}
+              className="w-full p-4 rounded-2xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/10 dark:border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center gap-3 cursor-pointer group"
+            >
+              <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center text-white shadow-lg shadow-amber-500/20 group-hover:rotate-12 transition-transform">
+                <ShoppingBag className="w-5 h-5" />
+              </div>
+              <span>{isRTL ? 'طلب سريع (بيع منتجات بدون جلسة)' : 'Quick Order (Product Sale)'}</span>
+            </button>
+
             <button 
               onClick={() => navigate('/rooms')}
               className="w-full p-4 rounded-2xl bg-orange-500/5 dark:bg-orange-500/10 border border-orange-500/10 dark:border-orange-500/20 text-orange-600 dark:text-orange-400 text-sm font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center gap-3 cursor-pointer group"

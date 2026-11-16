@@ -35,7 +35,9 @@ import {
   AlertCircle,
   CalendarDays,
   Layers,
-  Check
+  Check,
+  ShoppingBag,
+  Printer
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -43,11 +45,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { useWorkspaceStore } from '../store';
 import { formatCurrency, formatDuration, toMillis, getSessionDateMillis } from '../lib/utils-workspace';
+import { printProductOrderReceipt } from '../features/sessions/utils/printReceipt';
 import { 
   exportToExcel, 
   formatSessionForExport, 
   formatSubscriptionForExport, 
-  formatExpenseForExport 
+  formatExpenseForExport,
+  formatProductOrderForExport
 } from '../lib/exportUtils';
 import { 
   DropdownMenu,
@@ -220,7 +224,14 @@ export default function Reports() {
     let sessionReceivedTotal = 0;
     let subscriptionReceivedTotal = 0;
     let bookingReceivedTotal = 0;
+    let productOrderReceivedTotal = 0;
+    let productOrderCount = 0;
     let otherReceivedTotal = 0;
+    const productOrdersInRange: typeof paymentsInRange = [];
+
+    const isProductOrderPayment = (p: (typeof paymentsInRange)[number]) =>
+      p.paymentType === 'product_order' ||
+      (!p.sessionId && !p.bookingId && !p.subscriptionId && Array.isArray(p.items) && p.items.length > 0);
 
     // A. Process all explicit payment records in range (Direct Cash Inflow)
     paymentsInRange.forEach(p => {
@@ -242,6 +253,10 @@ export default function Reports() {
         subscriptionReceivedTotal += amount;
       } else if (p.bookingId) {
         bookingReceivedTotal += amount;
+      } else if (isProductOrderPayment(p)) {
+        productOrderReceivedTotal += amount;
+        productOrderCount++;
+        productOrdersInRange.push(p);
       } else {
         otherReceivedTotal += amount;
       }
@@ -352,7 +367,7 @@ export default function Reports() {
       bookingOutstandingTotal += remaining;
     });
 
-    const totalBilled = sessionBilledTotal + subscriptionBilledTotal + bookingBilledTotal;
+    const totalBilled = sessionBilledTotal + subscriptionBilledTotal + bookingBilledTotal + productOrderReceivedTotal;
     const totalOutstanding = sessionOutstandingTotal + subscriptionOutstandingTotal + bookingOutstandingTotal;
     const totalExpenses = expensesInRange.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
     const netProfit = totalRevenueReceived - totalExpenses;
@@ -430,6 +445,11 @@ export default function Reports() {
         serviceMap[svc.name] = (serviceMap[svc.name] || 0) + (svc.quantity || 1);
       });
     });
+    productOrdersInRange.forEach(order => {
+      (order.items || []).forEach(item => {
+        serviceMap[item.name] = (serviceMap[item.name] || 0) + (item.quantity || 1);
+      });
+    });
 
     const serviceData = Object.entries(serviceMap)
       .map(([name, value]) => ({ name, value }))
@@ -441,6 +461,10 @@ export default function Reports() {
       ? Math.round(sessionsInRange.reduce((acc, s) => acc + (s.duration || 0), 0) / sessionsInRange.length) 
       : 0;
 
+    const sortedProductOrders = [...productOrdersInRange].sort(
+      (a, b) => toMillis(b.date || b.createdAt) - toMillis(a.date || a.createdAt)
+    );
+
     return {
       trendData,
       serviceData,
@@ -448,6 +472,7 @@ export default function Reports() {
       filteredSubscriptions: subscriptionsInRange,
       filteredExpenses: expensesInRange,
       filteredBookings: bookingsInRange,
+      filteredProductOrders: sortedProductOrders,
       kpis: {
         totalRevenueReceived,
         totalBilled,
@@ -458,6 +483,7 @@ export default function Reports() {
         totalSessions: sessionsInRange.length,
         totalSubscriptionsCount: subscriptionsInRange.length,
         totalBookingsCount: bookingsInRange.length,
+        productOrderCount,
         activeSubscribers: subscriptions.filter(s => s.isActive).length,
         totalCashPayment,
         totalInstapayPayment,
@@ -466,13 +492,14 @@ export default function Reports() {
         sessionReceivedTotal,
         subscriptionReceivedTotal,
         bookingReceivedTotal,
+        productOrderReceivedTotal,
         otherReceivedTotal
       }
     };
   }, [completedSessions, subscriptions, expenses, payments, bookings, startDate, endDate, dateLocale]);
 
   // Excel Export Handler with exact active filtered data
-  const handleExport = (type: 'sessions' | 'subscriptions' | 'expenses' | 'packages' | 'financialSummary') => {
+  const handleExport = (type: 'sessions' | 'subscriptions' | 'expenses' | 'packages' | 'productOrders' | 'financialSummary') => {
     let dataToExport: any[] = [];
     let fileName = '';
 
@@ -500,11 +527,19 @@ export default function Reports() {
         }));
         fileName = `Packages_Report`;
         break;
+      case 'productOrders':
+        dataToExport = formatProductOrderForExport(analyticsData.filteredProductOrders);
+        fileName = `Product_Orders_Report_${rangeStr}`;
+        break;
       case 'financialSummary':
         dataToExport = [{
           'الفترة من': format(startDate, 'yyyy-MM-dd'),
           'الفترة إلى': format(endDate, 'yyyy-MM-dd'),
           'إجمالي الإيرادات المحصلة (Cash In)': analyticsData.kpis.totalRevenueReceived,
+          'إيراد الجلسات': analyticsData.kpis.sessionReceivedTotal,
+          'إيراد الباقات والاشتراكات': analyticsData.kpis.subscriptionReceivedTotal,
+          'إيراد الحجوزات': analyticsData.kpis.bookingReceivedTotal,
+          'إيراد الطلبات السريعة (بدون جلسة)': analyticsData.kpis.productOrderReceivedTotal,
           'إجمالي المبيعات المستحقة (Total Billed)': analyticsData.kpis.totalBilled,
           'المستحقات غير المحصلة (Outstanding)': analyticsData.kpis.totalOutstanding,
           'إجمالي المصروفات (Total Expenses)': analyticsData.kpis.totalExpenses,
@@ -512,6 +547,7 @@ export default function Reports() {
           'إجمالي الكاش': analyticsData.kpis.totalCashPayment,
           'إجمالي إنستا باي': analyticsData.kpis.totalInstapayPayment,
           'عدد الجلسات': analyticsData.kpis.totalSessions,
+          'عدد الطلبات السريعة': analyticsData.kpis.productOrderCount,
           'عدد الباقات والاشتراكات': analyticsData.kpis.totalSubscriptionsCount
         }];
         fileName = `Financial_Summary_${rangeStr}`;
@@ -681,6 +717,10 @@ export default function Reports() {
                 <FileSpreadsheet className="w-4 h-4 text-amber-500" />
                 <span>{t('settings.packages')}</span>
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('productOrders')} className="gap-2 text-xs font-bold rounded-xl cursor-pointer">
+                <ShoppingBag className="w-4 h-4 text-amber-500" />
+                <span>{isRTL ? 'مبيعات المنتجات المباشرة' : 'Product Orders'} ({analyticsData.kpis.productOrderCount})</span>
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -703,11 +743,16 @@ export default function Reports() {
             <h3 className="text-2xl font-black text-slate-900 dark:text-white mt-1 font-mono">
               {formatCurrency(analyticsData.kpis.totalRevenueReceived)}
             </h3>
-            <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
+            <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
               <span>{isRTL ? 'جلسات: ' : 'Sessions: '}{formatCurrency(analyticsData.kpis.sessionReceivedTotal)}</span>
               <span>{isRTL ? 'باقات: ' : 'Packages: '}{formatCurrency(analyticsData.kpis.subscriptionReceivedTotal)}</span>
               {analyticsData.kpis.bookingReceivedTotal > 0 && (
                 <span>{isRTL ? 'حجوزات: ' : 'Bookings: '}{formatCurrency(analyticsData.kpis.bookingReceivedTotal)}</span>
+              )}
+              {analyticsData.kpis.productOrderReceivedTotal > 0 && (
+                <span className="text-amber-600 dark:text-amber-400 font-bold">
+                  {isRTL ? 'مبيعات سريعة: ' : 'Orders: '}{formatCurrency(analyticsData.kpis.productOrderReceivedTotal)}
+                </span>
               )}
             </div>
             <div className="absolute bottom-0 left-0 w-full h-1 bg-emerald-500" />
@@ -1070,6 +1115,7 @@ export default function Reports() {
                     { name: isRTL ? 'إيراد الجلسات' : 'Sessions Revenue', value: analyticsData.kpis.sessionReceivedTotal, fill: '#10b981' },
                     { name: isRTL ? 'إيراد الباقات' : 'Packages Revenue', value: analyticsData.kpis.subscriptionReceivedTotal, fill: '#8b5cf6' },
                     { name: isRTL ? 'إيراد الحجوزات' : 'Bookings Revenue', value: analyticsData.kpis.bookingReceivedTotal, fill: '#06b6d4' },
+                    { name: isRTL ? 'مبيعات سريعة' : 'Product Orders', value: analyticsData.kpis.productOrderReceivedTotal, fill: '#f59e0b' },
                     { name: isRTL ? 'إيرادات أخرى' : 'Other Revenue', value: analyticsData.kpis.otherReceivedTotal, fill: '#3b82f6' },
                     { name: isRTL ? 'المصروفات' : 'Expenses', value: analyticsData.kpis.totalExpenses, fill: '#ef4444' }
                   ].filter(item => item.value > 0)}
@@ -1085,6 +1131,7 @@ export default function Reports() {
                     { name: isRTL ? 'إيراد الجلسات' : 'Sessions Revenue', value: analyticsData.kpis.sessionReceivedTotal, fill: '#10b981' },
                     { name: isRTL ? 'إيراد الباقات' : 'Packages Revenue', value: analyticsData.kpis.subscriptionReceivedTotal, fill: '#8b5cf6' },
                     { name: isRTL ? 'إيراد الحجوزات' : 'Bookings Revenue', value: analyticsData.kpis.bookingReceivedTotal, fill: '#06b6d4' },
+                    { name: isRTL ? 'مبيعات سريعة' : 'Product Orders', value: analyticsData.kpis.productOrderReceivedTotal, fill: '#f59e0b' },
                     { name: isRTL ? 'إيرادات أخرى' : 'Other Revenue', value: analyticsData.kpis.otherReceivedTotal, fill: '#3b82f6' },
                     { name: isRTL ? 'المصروفات' : 'Expenses', value: analyticsData.kpis.totalExpenses, fill: '#ef4444' }
                   ].filter(item => item.value > 0).map((entry, index) => (
@@ -1099,6 +1146,95 @@ export default function Reports() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Standalone Product Orders Breakdown (POS without sessions) */}
+      <Card className="bg-white dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 shadow-sm rounded-3xl overflow-hidden">
+        <CardHeader className="flex flex-row items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800/80 pb-4">
+          <div>
+            <CardTitle className="text-slate-900 dark:text-white text-base font-black flex items-center gap-2">
+              <ShoppingBag className="w-5 h-5 text-amber-500" />
+              <span>{isRTL ? 'مبيعات المنتجات المباشرة (بدون جلسة)' : 'Standalone Product Orders (No Session)'}</span>
+            </CardTitle>
+            <CardDescription className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">
+              {isRTL
+                ? `${analyticsData.kpis.productOrderCount} طلب سريع بقيمة ${formatCurrency(analyticsData.kpis.productOrderReceivedTotal)}`
+                : `${analyticsData.kpis.productOrderCount} quick orders totaling ${formatCurrency(analyticsData.kpis.productOrderReceivedTotal)}`}
+            </CardDescription>
+          </div>
+          {analyticsData.filteredProductOrders.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleExport('productOrders')}
+              className="rounded-xl text-xs font-bold gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{isRTL ? 'تصدير' : 'Export'}</span>
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className="p-0">
+          {analyticsData.filteredProductOrders.length === 0 ? (
+            <div className="py-10 text-center text-xs font-bold text-slate-400">
+              {isRTL ? 'لا توجد طلبات منتجات مباشرة خلال هذه الفترة' : 'No standalone product orders in this period'}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
+              {analyticsData.filteredProductOrders.map((order) => (
+                <div
+                  key={order.id}
+                  className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center flex-wrap gap-2">
+                      <span className="text-sm font-black text-slate-900 dark:text-white">
+                        {order.customerName || (isRTL ? 'عميل سريع' : 'Walk-in Customer')}
+                      </span>
+                      {order.customerPhone && (
+                        <span className="text-[11px] font-mono text-slate-400">{order.customerPhone}</span>
+                      )}
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                        {order.paymentMethod === 'instapay' ? 'InstaPay' : (isRTL ? 'كاش' : 'Cash')}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {format(toMillis(order.date || order.createdAt), 'yyyy-MM-dd HH:mm')}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
+                      {(order.items || []).map(i => `${i.name} ×${i.quantity}`).join(' • ')}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+                    <div className="text-right">
+                      <p className="text-sm font-black font-mono text-emerald-600 dark:text-emerald-400">
+                        {formatCurrency(order.amount)}
+                      </p>
+                      {(order.serviceDiscountTotal || 0) > 0 && (
+                        <p className="text-[10px] font-bold text-slate-400">
+                          {isRTL ? `خصم -${formatCurrency(order.serviceDiscountTotal || 0)}` : `Disc -${formatCurrency(order.serviceDiscountTotal || 0)}`}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => printProductOrderReceipt(order)}
+                      className="h-9 px-3 rounded-xl gap-1.5 text-xs font-bold cursor-pointer"
+                      title={isRTL ? 'إعادة طباعة الإيصال' : 'Reprint Receipt'}
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>{isRTL ? 'إيصال' : 'Receipt'}</span>
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

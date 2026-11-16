@@ -1,5 +1,5 @@
 import React from 'react';
-import { Phone, Clock, Printer, ChevronRight, DoorOpen, Users, Coffee, Sparkles, Crown } from 'lucide-react';
+import { Phone, Clock, Printer, ChevronRight, DoorOpen, Users, Coffee, Sparkles, Crown, ArrowLeftRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { format } from 'date-fns';
 import { Card, CardContent } from '@/components/ui/card';
@@ -57,6 +57,8 @@ export const HistorySessionCard = React.memo(function HistorySessionCard({
   const isSubscriber = session.isSubscribed && !isPackage;
   const numPersons = session.numberOfPersons || session.roomAssignment?.groupSize || 1;
   const roomName = session.roomAssignment?.roomName || session.roomAssignment?.tableLabel || (session as any).roomName;
+  const originalRoomName = session.originalRoomAssignment?.roomName;
+  const packageRoomName = session.packageRoomName;
   const servicesCount = session.services?.reduce((sum, s) => sum + (s.quantity || 1), 0) || 0;
 
   const sessionStartMillis = toMillis(session.startTime || session.createdAt);
@@ -119,6 +121,20 @@ export const HistorySessionCard = React.memo(function HistorySessionCard({
                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 px-2 py-0.5 rounded-md flex items-center gap-1">
                   <DoorOpen className="w-3 h-3 text-cyan-500" />
                   {roomName}
+                </span>
+              )}
+
+              {originalRoomName && originalRoomName !== roomName && (
+                <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <ArrowLeftRight className="w-2.5 h-2.5" />
+                  {isRTL ? `نُقل من ${originalRoomName}` : `From ${originalRoomName}`}
+                </span>
+              )}
+
+              {(!originalRoomName || originalRoomName === roomName) && packageRoomName && packageRoomName !== roomName && (
+                <span className="text-[10px] font-bold text-violet-600 dark:text-violet-400 bg-violet-500/10 px-2 py-0.5 rounded-md flex items-center gap-1">
+                  <ArrowLeftRight className="w-2.5 h-2.5" />
+                  {isRTL ? `غرفة الباقة: ${packageRoomName}` : `Pkg: ${packageRoomName}`}
                 </span>
               )}
 

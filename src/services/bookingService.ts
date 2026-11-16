@@ -14,10 +14,10 @@ import {
   limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Booking } from '../types';
+import { Booking, RoomTransferRecord, Session } from '../types';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 import { cleanData } from '../lib/utils';
-import { checkRoomConflictInFirestore } from './roomAvailabilityService';
+import { checkRoomConflictInFirestore, isSamePhysicalRoom } from './roomAvailabilityService';
 
 export const bookingService = {
   async createBooking(bookingData: Omit<Booking, 'id' | 'createdAt'>) {
@@ -64,17 +64,24 @@ export const bookingService = {
       }
 
       // If checks pass, create the booking
-      const total = bookingData.totalPrice || 0;
-      const paid = Math.min(bookingData.paidAmount || 0, total);
-      const remaining = Math.max(0, total - paid);
+      const isCoveredBySubscription = Boolean(bookingData.isSubscribed && bookingData.subscriptionId);
+      const total = isCoveredBySubscription ? 0 : (bookingData.totalPrice || 0);
+      const paid = isCoveredBySubscription ? 0 : Math.min(bookingData.paidAmount || 0, total);
+      const remaining = isCoveredBySubscription ? 0 : Math.max(0, total - paid);
       let paymentStatus: Booking['paymentStatus'] = 'unpaid';
-      if (paid >= total && total > 0) paymentStatus = 'paid';
-      else if (paid > 0) paymentStatus = 'partially_paid';
+      if (isCoveredBySubscription) {
+        paymentStatus = 'paid';
+      } else if (paid >= total && total > 0) {
+        paymentStatus = 'paid';
+      } else if (paid > 0) {
+        paymentStatus = 'partially_paid';
+      }
 
       const selectedPaymentMethod = bookingData.paymentMethod || 'cash';
 
       const data = cleanData({
         ...bookingData,
+        totalPrice: total,
         paidAmount: paid,
         remainingAmount: remaining,
         paymentStatus,
@@ -186,6 +193,149 @@ export const bookingService = {
       await updateDoc(docRef, cleanData(data));
     } catch (error: any) {
       if (error.message === 'BOOKING_ALREADY_STARTED' || error.message === 'ROOM_OVERLAP' || error.message === 'CUSTOMER_OVERLAP_ERR') {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.UPDATE, 'bookings');
+      throw error;
+    }
+  },
+
+  /**
+   * Transfers an existing booking (upcoming, ready, or active) to another available room.
+   * Preserves original pricing, deposits, and customer subscriptions without charging again
+   * or altering the subscription/package document.
+   */
+  async transferBookingRoom(
+    bookingId: string,
+    newRoom: {
+      roomId: string;
+      roomName: string;
+      tableId?: string;
+      tableNumber?: number;
+      tableLabel?: string;
+      groupSize?: number;
+    },
+    reason?: string,
+    transferredBy?: string
+  ): Promise<RoomTransferRecord> {
+    try {
+      const docRef = doc(db, 'bookings', bookingId);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) {
+        throw new Error('Booking not found');
+      }
+      const booking = { id: snap.id, ...snap.data() } as Booking;
+
+      if (booking.status === 'cancelled' || booking.status === 'completed') {
+        throw new Error('CANNOT_TRANSFER_CLOSED_BOOKING');
+      }
+
+      if (isSamePhysicalRoom({ id: booking.roomId, name: booking.roomName }, { id: newRoom.roomId, name: newRoom.roomName })) {
+        throw new Error('SAME_ROOM');
+      }
+
+      // Check conflict in target room for booking's time window
+      const conflict = await checkRoomConflictInFirestore(
+        newRoom.roomId,
+        booking.startTime,
+        booking.endTime,
+        {
+          excludeBookingId: bookingId,
+          excludeSessionId: booking.activeSessionId || `booking_${bookingId}`,
+          roomName: newRoom.roomName
+        }
+      );
+
+      if (conflict.hasConflict) {
+        const err = new Error(conflict.errorMessage || 'ROOM_OVERLAP');
+        (err as any).conflictDetails = conflict;
+        throw err;
+      }
+
+      // Resolve old room display name
+      let oldRoomName = booking.roomName;
+      if (!oldRoomName) {
+        try {
+          const { useWorkspaceStore } = await import('../store');
+          const storeRooms = useWorkspaceStore.getState().rooms || [];
+          oldRoomName = storeRooms.find(r => r.id === booking.roomId)?.name || booking.roomId;
+        } catch {
+          oldRoomName = booking.roomId;
+        }
+      }
+
+      const now = Date.now();
+      const transferRecord: RoomTransferRecord = {
+        fromRoomId: booking.roomId,
+        fromRoomName: oldRoomName,
+        toRoomId: newRoom.roomId,
+        toRoomName: newRoom.roomName,
+        transferredAt: now,
+        transferredBy: transferredBy || undefined,
+        reason: reason?.trim() || undefined,
+      };
+
+      const nextHistory = [...(booking.transferHistory || []), transferRecord];
+
+      await updateDoc(docRef, cleanData({
+        roomId: newRoom.roomId,
+        roomName: newRoom.roomName,
+        originalRoomId: booking.originalRoomId || booking.roomId,
+        originalRoomName: booking.originalRoomName || oldRoomName,
+        transferredAt: now,
+        transferReason: reason?.trim() || booking.transferReason,
+        transferHistory: nextHistory,
+      }));
+
+      // If this booking already has an active session, update its roomAssignment too so UI/History/Reports reflect actual room
+      const candidateSessionIds = new Set<string>();
+      if (booking.activeSessionId) candidateSessionIds.add(booking.activeSessionId);
+      candidateSessionIds.add(`booking_${bookingId}`);
+
+      try {
+        const activeQ = query(
+          collection(db, 'sessions'),
+          where('bookingId', '==', bookingId),
+          where('status', '==', 'active'),
+          limit(5)
+        );
+        const activeSnap = await getDocs(activeQ);
+        activeSnap.docs.forEach(d => candidateSessionIds.add(d.id));
+      } catch (_) {}
+
+      for (const sessId of candidateSessionIds) {
+        try {
+          const sessRef = doc(db, 'sessions', sessId);
+          const sessSnap = await getDoc(sessRef);
+          if (sessSnap.exists()) {
+            const sessData = sessSnap.data() as Session;
+            if (sessData.status === 'active') {
+              const newAssignment = {
+                roomId: newRoom.roomId,
+                roomName: newRoom.roomName,
+                tableId: newRoom.tableId || sessData.roomAssignment?.tableId || 'tbl-1',
+                tableNumber: newRoom.tableNumber || sessData.roomAssignment?.tableNumber || 1,
+                tableLabel: newRoom.tableLabel || newRoom.roomName,
+                groupSize: newRoom.groupSize || sessData.roomAssignment?.groupSize || 1,
+              };
+              const sessHistory = [...(sessData.transferHistory || []), transferRecord];
+              await updateDoc(sessRef, cleanData({
+                roomAssignment: newAssignment,
+                originalRoomAssignment: sessData.originalRoomAssignment || sessData.roomAssignment,
+                transferredAt: now,
+                transferReason: reason?.trim() || sessData.transferReason,
+                transferHistory: sessHistory,
+              }));
+            }
+          }
+        } catch (syncErr) {
+          console.warn('Could not sync active session during booking transfer:', syncErr);
+        }
+      }
+
+      return transferRecord;
+    } catch (error: any) {
+      if (error.message === 'ROOM_OVERLAP' || error.message === 'SAME_ROOM' || error.message === 'CANNOT_TRANSFER_CLOSED_BOOKING') {
         throw error;
       }
       handleFirestoreError(error, OperationType.UPDATE, 'bookings');

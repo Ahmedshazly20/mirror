@@ -15,10 +15,10 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Session } from '../types';
+import { Session, SessionRoomAssignment, RoomTransferRecord, Booking } from '../types';
 import { toMillis, getSessionDateMillis } from '../lib/utils-workspace';
 import { cleanData } from '../lib/utils';
-import { checkRoomConflictInFirestore } from './roomAvailabilityService';
+import { checkRoomConflictInFirestore, getSessionTimeRange, isSamePhysicalRoom } from './roomAvailabilityService';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 export interface ReceiptData {
@@ -81,6 +81,12 @@ export const sessionService = {
     durationMode?: 'fixed' | 'full_day' | 'open',
     selectedHours?: number,
     numberOfPersons?: number,
+    extraMetadata?: {
+      packageRoomId?: string;
+      packageRoomName?: string;
+      originalRoomAssignment?: SessionRoomAssignment;
+      transferReason?: string;
+    },
   ): Promise<string> {
     // If started from a booking and a start request is already processing, await and return it
     if (bookingId && inFlightBookingStarts.has(bookingId)) {
@@ -251,6 +257,10 @@ export const sessionService = {
           notes: '',
           createdAt: Timestamp.now(),
           roomAssignment: normalizedRoomAssignment,
+          ...(extraMetadata?.packageRoomId ? { packageRoomId: extraMetadata.packageRoomId } : {}),
+          ...(extraMetadata?.packageRoomName ? { packageRoomName: extraMetadata.packageRoomName } : {}),
+          ...(extraMetadata?.originalRoomAssignment ? { originalRoomAssignment: extraMetadata.originalRoomAssignment } : {}),
+          ...(extraMetadata?.transferReason ? { transferReason: extraMetadata.transferReason } : {}),
         };
 
         const sessionData = cleanData(rawSessionData);
@@ -332,6 +342,130 @@ export const sessionService = {
       });
     } catch (error) {
       this._handleFirebaseError(error, 'Update Room Assignment');
+      throw error;
+    }
+  },
+
+  /**
+   * Transfers an active session to another available room without modifying package balance,
+   * package room configuration, or charging additional booking fees.
+   */
+  async transferSessionRoom(
+    sessionId: string,
+    newRoomAssignment: SessionRoomAssignment,
+    reason?: string,
+    transferredBy?: string,
+  ): Promise<RoomTransferRecord> {
+    try {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      const snap = await getDoc(sessionRef);
+      if (!snap.exists()) {
+        throw new Error('Session not found');
+      }
+      const session = { id: snap.id, ...snap.data() } as Session;
+      if (session.status !== 'active') {
+        throw new Error('CANNOT_TRANSFER_COMPLETED_SESSION');
+      }
+
+      if (
+        session.roomAssignment &&
+        isSamePhysicalRoom(
+          { id: session.roomAssignment.roomId, name: session.roomAssignment.roomName },
+          { id: newRoomAssignment.roomId, name: newRoomAssignment.roomName },
+        )
+      ) {
+        throw new Error('SAME_ROOM');
+      }
+
+      let linkedBooking: Booking | null = null;
+      if (session.bookingId) {
+        try {
+          const bookingSnap = await getDoc(doc(db, 'bookings', session.bookingId));
+          if (bookingSnap.exists()) {
+            linkedBooking = { id: bookingSnap.id, ...bookingSnap.data() } as Booking;
+          }
+        } catch (_) {}
+      }
+
+      const { start, end } = getSessionTimeRange(session, linkedBooking);
+      const conflict = await checkRoomConflictInFirestore(
+        newRoomAssignment.roomId,
+        start,
+        end,
+        {
+          excludeSessionId: sessionId,
+          excludeBookingId: session.bookingId || undefined,
+          roomName: newRoomAssignment.roomName,
+        },
+      );
+
+      if (conflict.hasConflict) {
+        const err = new Error(conflict.errorMessage || 'ROOM_OVERLAP');
+        (err as any).conflictDetails = conflict;
+        throw err;
+      }
+
+      const normalizedAssignment: SessionRoomAssignment = {
+        roomId: newRoomAssignment.roomId || '',
+        roomName: newRoomAssignment.roomName || '',
+        tableId: newRoomAssignment.tableId || 'tbl-1',
+        tableNumber: newRoomAssignment.tableNumber || 1,
+        tableLabel: newRoomAssignment.tableLabel || newRoomAssignment.roomName || '',
+        groupSize: newRoomAssignment.groupSize || session.roomAssignment?.groupSize || 1,
+      };
+
+      const now = Date.now();
+      const fromRoomId = session.roomAssignment?.roomId || '';
+      const fromRoomName = session.roomAssignment?.roomName || (session.roomAssignment?.tableLabel || 'Shared Space');
+
+      const transferRecord: RoomTransferRecord = {
+        fromRoomId,
+        fromRoomName,
+        toRoomId: normalizedAssignment.roomId,
+        toRoomName: normalizedAssignment.roomName,
+        transferredAt: now,
+        transferredBy: transferredBy || undefined,
+        reason: reason?.trim() || undefined,
+      };
+
+      const nextHistory = [...(session.transferHistory || []), transferRecord];
+
+      await updateDoc(sessionRef, cleanData({
+        roomAssignment: normalizedAssignment,
+        originalRoomAssignment: session.originalRoomAssignment || session.roomAssignment,
+        transferredAt: now,
+        transferReason: reason?.trim() || session.transferReason,
+        transferHistory: nextHistory,
+      }));
+
+      // Keep linked booking in sync if this session started from a booking
+      if (session.bookingId && linkedBooking) {
+        try {
+          const bookingHistory = [...(linkedBooking.transferHistory || []), transferRecord];
+          await updateDoc(doc(db, 'bookings', session.bookingId), cleanData({
+            roomId: normalizedAssignment.roomId,
+            roomName: normalizedAssignment.roomName,
+            originalRoomId: linkedBooking.originalRoomId || linkedBooking.roomId,
+            originalRoomName: linkedBooking.originalRoomName || linkedBooking.roomName || fromRoomName,
+            transferredAt: now,
+            transferReason: reason?.trim() || linkedBooking.transferReason,
+            transferHistory: bookingHistory,
+          }));
+        } catch (syncErr) {
+          console.warn('Could not sync booking during session room transfer:', syncErr);
+        }
+      }
+
+      return transferRecord;
+    } catch (error: any) {
+      if (
+        error.message === 'ROOM_OVERLAP' ||
+        error.message === 'SAME_ROOM' ||
+        error.message === 'CANNOT_TRANSFER_COMPLETED_SESSION'
+      ) {
+        throw error;
+      }
+      this._handleFirebaseError(error, 'Transfer Session Room');
       throw error;
     }
   },

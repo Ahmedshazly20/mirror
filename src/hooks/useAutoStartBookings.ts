@@ -54,12 +54,13 @@ export function useAutoStartBookings() {
           }
 
           const room = rooms.find(r => r.id === booking.roomId);
+          const resolvedRoomName = room?.name || booking.roomName || 'غرفة محجوزة';
           const roomAssignment: SessionRoomAssignment = {
             roomId: booking.roomId,
-            roomName: room?.name || 'غرفة محجوزة',
+            roomName: resolvedRoomName,
             tableId: room?.tables?.[0]?.id || 'tbl-1',
             tableNumber: room?.tables?.[0]?.number || 1,
-            tableLabel: room?.name || 'غرفة محجوزة',
+            tableLabel: resolvedRoomName,
             groupSize: room?.capacity || 1,
           };
 
@@ -70,14 +71,16 @@ export function useAutoStartBookings() {
             c.name.trim().toLowerCase() === booking.userName.trim().toLowerCase()
           );
 
+          const isBookingSubscribed = Boolean(booking.isSubscribed || booking.subscriptionId);
+
           const sessionId = await sessionService.startSession(
             booking.userName,
             booking.phoneNumber,
             'booking',
-            false,
+            isBookingSubscribed,
             true,
             roomAssignment,
-            undefined,
+            booking.subscriptionId || undefined,
             customer?.id || booking.customerId,
             booking.id,
             booking.totalPrice,

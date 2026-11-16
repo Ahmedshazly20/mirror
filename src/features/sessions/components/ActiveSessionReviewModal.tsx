@@ -166,6 +166,7 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
         notes: session.notes || '',
         bookingId: session.bookingId || undefined,
         subscriptionId: session.subscriptionId || undefined,
+        isSubscribed: session.isSubscribed,
         deductedMinutes: deductedMinutes || undefined,
         deductedHours: deductedHours || undefined,
         remainingMinutes: isPackage ? newRemainingMins : undefined,
@@ -283,7 +284,11 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
                 {isBookingSession ? (
                   <>
                     <DoorOpen className="w-3 h-3 text-indigo-500" />
-                    <span>{isRTL ? 'حجز غرفة (سعر ثابت)' : 'Room Booking'}</span>
+                    <span>
+                      {session.isSubscribed
+                        ? (isRTL ? 'حجز غرفة (مشمول بالاشتراك)' : 'Room Booking (Subscribed)')
+                        : (isRTL ? 'حجز غرفة (سعر ثابت)' : 'Room Booking')}
+                    </span>
                   </>
                 ) : session.isSubscribed ? (
                   isPackage ? t('subs.package') : t('sessions.subscriber')
@@ -301,6 +306,11 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
                 <p className="text-base font-bold text-slate-900 dark:text-white truncate">
                   {session.roomAssignment?.roomName || (isRTL ? 'المساحة العامة' : 'Open Space')}
                 </p>
+                {session.originalRoomAssignment?.roomName && session.originalRoomAssignment.roomName !== session.roomAssignment?.roomName && (
+                  <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                    {isRTL ? `نُقل من: ${session.originalRoomAssignment.roomName}` : `Transferred from: ${session.originalRoomAssignment.roomName}`}
+                  </p>
+                )}
                 {session.roomAssignment?.tableLabel && (
                   <p className="text-xs text-slate-500 mt-0.5">{session.roomAssignment.tableLabel}</p>
                 )}
@@ -324,12 +334,18 @@ export const ActiveSessionReviewModal = React.memo(function ActiveSessionReviewM
                 <DoorOpen className="w-4 h-4 text-indigo-500" />
                 <span className="text-slate-700 dark:text-slate-300 font-semibold">
                   {isBookingSession 
-                    ? (isRTL ? 'قيمة حجز الغرفة (سعر ثابت)' : 'Room Booking (Fixed Price)')
+                    ? (session.isSubscribed
+                        ? (isRTL ? 'حجز غرفة (مشمول بالاشتراك)' : 'Room Booking (Subscribed)')
+                        : (isRTL ? 'قيمة حجز الغرفة (سعر ثابت)' : 'Room Booking (Fixed Price)'))
                     : `${t('sessions.timeCost')} (${isPackage ? t('subs.package') : type})`}
                 </span>
               </div>
               <span className="font-bold text-slate-900 dark:text-white font-mono">
-                {isPackage ? `${formatPackageBalance(durationMinutes)} (${isRTL ? 'خصم من الباقة' : 'Deducted from package'})` : formatCurrency(effectiveTimeCost)}
+                {isPackage
+                  ? `${formatPackageBalance(durationMinutes)} (${isRTL ? 'خصم من الباقة' : 'Deducted from package'})`
+                  : isBookingSession && session.isSubscribed && effectiveTimeCost === 0
+                    ? `${formatCurrency(0)} (${isRTL ? 'مشمول بالاشتراك' : 'Covered'})`
+                    : formatCurrency(effectiveTimeCost)}
               </span>
             </div>
 

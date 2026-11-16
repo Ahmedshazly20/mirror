@@ -19,7 +19,8 @@ import {
   WifiOff,
   AlertTriangle,
   Users,
-  Boxes
+  Boxes,
+  ShoppingBag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +29,7 @@ import { Badge } from '@/components/ui/badge';
 import { useWorkspaceStore } from '../store';
 import { authService } from '../services/authService';
 import NewSessionModal from '../components/NewSessionModal';
+import QuickOrderModal from '../components/QuickOrderModal';
 
 export default function MainLayout() {
   const { t, i18n } = useTranslation();
@@ -93,7 +95,9 @@ export default function MainLayout() {
     theme, 
     toggleTheme,
     isNewSessionModalOpen,
-    setIsNewSessionModalOpen
+    setIsNewSessionModalOpen,
+    isQuickOrderModalOpen,
+    setIsQuickOrderModalOpen
   } = useWorkspaceStore();
 
   const activeSessionsCount = activeSessions.length;
@@ -195,13 +199,21 @@ export default function MainLayout() {
             </h2>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <button
               onClick={toggleTheme}
               className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-500 dark:text-slate-400"
             >
               {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
             </button>
+            <Button
+              variant="outline"
+              onClick={() => setIsQuickOrderModalOpen(true)}
+              className="border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 rounded-xl px-4 font-bold gap-2 cursor-pointer"
+            >
+              <ShoppingBag className="w-4 h-4" />
+              <span className="hidden sm:inline">{isRTL ? 'طلب سريع' : 'Quick Order'}</span>
+            </Button>
             <Button 
               onClick={() => setIsNewSessionModalOpen(true)}
               className="bg-cyan-500 hover:bg-cyan-600 text-white rounded-xl px-6 shadow-lg shadow-cyan-500/20"
@@ -230,6 +242,11 @@ export default function MainLayout() {
       <NewSessionModal 
         isOpen={isNewSessionModalOpen} 
         onClose={() => setIsNewSessionModalOpen(false)} 
+      />
+
+      <QuickOrderModal
+        isOpen={isQuickOrderModalOpen}
+        onClose={() => setIsQuickOrderModalOpen(false)}
       />
 
       {/* Floating Online/Offline/Weak Connection alert bottom left */}

@@ -172,4 +172,205 @@ export function getTimeElapsed(startTime: any): string {
   return formatDistanceToNow(toMillis(startTime), { addSuffix: false });
 }
 
+const WEEKDAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+export type SubscriptionIneligibilityReason =
+  | 'inactive'
+  | 'not_started'
+  | 'expired'
+  | 'exhausted'
+  | 'day_not_allowed';
+
+export interface SubscriptionDateCheckResult {
+  valid: boolean;
+  reason?: SubscriptionIneligibilityReason;
+}
+
+export interface EligibleSubscriptionMatch<T = any> {
+  subscription: T | null;
+  status: 'eligible' | 'ineligible' | 'none';
+  reason?: SubscriptionIneligibilityReason;
+  candidateSub?: T;
+}
+
+/**
+ * Checks whether a subscription/package is valid specifically on `targetStartMs`
+ * (and optional `targetEndMs`), respecting isActive, startDate, endDate, allowedDays,
+ * and remaining package balance without modifying any subscription state.
+ */
+export function isSubscriptionValidOnDate(
+  sub: {
+    isActive?: boolean;
+    type?: string;
+    startDate?: number | null;
+    endDate?: number | null;
+    allowedDays?: string[];
+    totalHours?: number | null;
+    remainingHours?: number | null;
+    totalMinutes?: number | null;
+    remainingMinutes?: number | null;
+  } | null | undefined,
+  targetStartMs: number,
+  _targetEndMs?: number
+): SubscriptionDateCheckResult {
+  if (!sub) return { valid: false, reason: 'inactive' };
+  if (sub.isActive === false) {
+    return { valid: false, reason: 'inactive' };
+  }
+
+  const targetDate = new Date(targetStartMs);
+  const targetDayStart = new Date(
+    targetDate.getFullYear(),
+    targetDate.getMonth(),
+    targetDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  ).getTime();
+
+  if (typeof sub.startDate === 'number' && sub.startDate > 0) {
+    const startD = new Date(sub.startDate);
+    const subStartDay = new Date(
+      startD.getFullYear(),
+      startD.getMonth(),
+      startD.getDate(),
+      0,
+      0,
+      0,
+      0
+    ).getTime();
+    if (targetDayStart < subStartDay) {
+      return { valid: false, reason: 'not_started' };
+    }
+  }
+
+  if (typeof sub.endDate === 'number' && sub.endDate > 0) {
+    if (targetStartMs > sub.endDate) {
+      return { valid: false, reason: 'expired' };
+    }
+  }
+
+  if (Array.isArray(sub.allowedDays) && sub.allowedDays.length > 0) {
+    const dayKey = WEEKDAY_KEYS[targetDate.getDay()];
+    const normalizedAllowed = sub.allowedDays.map(d => d.toLowerCase().trim());
+    if (!normalizedAllowed.includes(dayKey)) {
+      return { valid: false, reason: 'day_not_allowed' };
+    }
+  }
+
+  const isHourLimitedPackage =
+    sub.type === 'package' ||
+    (sub.type !== 'monthly' &&
+      (typeof sub.totalMinutes === 'number' ||
+        typeof sub.totalHours === 'number' ||
+        typeof sub.remainingMinutes === 'number' ||
+        typeof sub.remainingHours === 'number'));
+
+  if (isHourLimitedPackage) {
+    const remainingMins = getSubscriptionRemainingMinutes(sub);
+    if (remainingMins <= 0) {
+      return { valid: false, reason: 'exhausted' };
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Finds the best eligible subscription/package for a customer on a requested date/time.
+ * Matches by customerId first, then normalized phoneNumber, then exact trimmed name.
+ */
+export function findEligibleSubscriptionForDate<
+  T extends {
+    id: string;
+    customerId?: string;
+    phoneNumber?: string;
+    userName?: string;
+    type?: string;
+    roomId?: string;
+    isActive?: boolean;
+    startDate?: number | null;
+    endDate?: number | null;
+    allowedDays?: string[];
+    totalHours?: number | null;
+    remainingHours?: number | null;
+    totalMinutes?: number | null;
+    remainingMinutes?: number | null;
+  }
+>(
+  subscriptions: T[],
+  customer: { customerId?: string; phoneNumber?: string; userName?: string },
+  targetStartMs: number,
+  targetEndMs?: number,
+  preferredRoomId?: string
+): EligibleSubscriptionMatch<T> {
+  const cleanPhone = (customer.phoneNumber || '').trim();
+  const cleanName = (customer.userName || '').trim().toLowerCase();
+  const cleanCustId = (customer.customerId || '').trim();
+
+  if (!cleanCustId && !cleanPhone && !cleanName) {
+    return { subscription: null, status: 'none' };
+  }
+
+  const customerSubs = (subscriptions || []).filter(sub => {
+    if (cleanCustId && sub.customerId && sub.customerId === cleanCustId) {
+      return true;
+    }
+    if (cleanPhone && sub.phoneNumber && sub.phoneNumber.trim() === cleanPhone) {
+      return true;
+    }
+    if (
+      !cleanPhone &&
+      cleanName &&
+      sub.userName &&
+      sub.userName.trim().toLowerCase() === cleanName
+    ) {
+      return true;
+    }
+    return false;
+  });
+
+  if (customerSubs.length === 0) {
+    return { subscription: null, status: 'none' };
+  }
+
+  const evaluated = customerSubs.map(sub => ({
+    sub,
+    check: isSubscriptionValidOnDate(sub, targetStartMs, targetEndMs)
+  }));
+
+  const validMatches = evaluated.filter(e => e.check.valid);
+  if (validMatches.length > 0) {
+    validMatches.sort((a, b) => {
+      const aRoomMatch = preferredRoomId && a.sub.roomId === preferredRoomId ? 1 : 0;
+      const bRoomMatch = preferredRoomId && b.sub.roomId === preferredRoomId ? 1 : 0;
+      if (aRoomMatch !== bRoomMatch) return bRoomMatch - aRoomMatch;
+
+      // Prefer monthly unlimited over hour-limited package if both active, else higher remaining minutes
+      const aMonthly = a.sub.type === 'monthly' ? 1 : 0;
+      const bMonthly = b.sub.type === 'monthly' ? 1 : 0;
+      if (aMonthly !== bMonthly) return bMonthly - aMonthly;
+
+      return getSubscriptionRemainingMinutes(b.sub) - getSubscriptionRemainingMinutes(a.sub);
+    });
+
+    return {
+      subscription: validMatches[0].sub,
+      status: 'eligible',
+      candidateSub: validMatches[0].sub
+    };
+  }
+
+  // Customer has subscriptions, but none are valid on targetStartMs
+  const preferredIneligible = evaluated[0];
+  return {
+    subscription: null,
+    status: 'ineligible',
+    reason: preferredIneligible.check.reason,
+    candidateSub: preferredIneligible.sub
+  };
+}
+
+
 

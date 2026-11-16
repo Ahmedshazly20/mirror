@@ -39,6 +39,16 @@ export interface SessionRoomAssignment {
 
 export type SessionDurationMode = 'fixed' | 'full_day' | 'open';
 
+export interface RoomTransferRecord {
+  fromRoomId: string;
+  fromRoomName: string;
+  toRoomId: string;
+  toRoomName: string;
+  transferredAt: number;
+  transferredBy?: string;
+  reason?: string;
+}
+
 export interface Session {
   id: string;
   userName: string;
@@ -79,6 +89,12 @@ export interface Session {
   createdAt: any; // Firestore Timestamp
   completedAt?: any; // Firestore Timestamp
   roomAssignment?: SessionRoomAssignment;
+  originalRoomAssignment?: SessionRoomAssignment;
+  packageRoomId?: string;
+  packageRoomName?: string;
+  transferredAt?: number;
+  transferReason?: string;
+  transferHistory?: RoomTransferRecord[];
   subscriptionId?: string;
   deductedHours?: number;
   deductedMinutes?: number;
@@ -132,6 +148,7 @@ export type BookingStatus = 'confirmed' | 'active' | 'completed' | 'cancelled';
 export interface Booking {
   id: string;
   roomId: string;
+  roomName?: string;
   userName: string;
   phoneNumber: string;
   customerId?: string;
@@ -146,6 +163,14 @@ export interface Booking {
   notes?: string;
   createdAt: number;
   activeSessionId?: string;
+  isSubscribed?: boolean;
+  subscriptionId?: string;
+  subscriptionType?: SubscriptionType;
+  originalRoomId?: string;
+  originalRoomName?: string;
+  transferredAt?: number;
+  transferReason?: string;
+  transferHistory?: RoomTransferRecord[];
   cancellationReason?: string;
   cancelledAt?: number;
   lostDeposit?: number;
@@ -245,12 +270,29 @@ export interface Visit {
 }
 
 // ── Payments ──────────────────────────────────────────────────────────────────
+export interface PaymentOrderItem {
+  id?: string;
+  serviceId?: string;
+  inventoryItemId?: string;
+  name: string;
+  price: number;
+  originalPrice?: number;
+  discountAmount?: number;
+  quantity: number;
+}
+
 export interface Payment {
   id: string;
   bookingId?: string;
   customerId?: string;
   subscriptionId?: string;
   sessionId?: string;
+  paymentType?: 'session' | 'booking' | 'subscription' | 'product_order' | 'other';
+  customerName?: string;
+  customerPhone?: string;
+  items?: PaymentOrderItem[];
+  subtotal?: number;
+  serviceDiscountTotal?: number;
   amount: number;
   paymentMethod: 'cash' | 'instapay' | 'card';
   date: number;
@@ -284,7 +326,7 @@ export interface InventoryMovement {
   quantity: number;
   previousStock: number;
   newStock: number;
-  referenceType?: 'service' | 'session' | 'manual' | 'booking';
+  referenceType?: 'service' | 'session' | 'manual' | 'booking' | 'product_order';
   referenceId?: string;
   createdAt: number;
   notes?: string;

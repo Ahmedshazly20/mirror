@@ -495,6 +495,104 @@ export const inventoryService = {
     }
   },
 
+  /**
+   * Validates stock availability for all items in a product-only order BEFORE mutating,
+   * then deducts inventory and records movements using the existing recordStockMovement flow.
+   */
+  async validateAndDeductOrderStock(
+    orderItems: { id?: string; serviceId?: string; inventoryItemId?: string; name: string; quantity: number }[],
+    referenceType: 'product_order' | 'session' | 'service' = 'product_order',
+    referenceId?: string,
+    noteDetails?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!orderItems || orderItems.length === 0) return { success: true };
+
+      const { useWorkspaceStore } = await import('../store');
+      const state = useWorkspaceStore.getState();
+      const memoryServices = state.availableServices || [];
+      const memoryInventory = state.inventoryItems || [];
+
+      const serviceMap = new Map<string, ServiceItem>();
+      memoryServices.forEach(s => {
+        if (s.id) serviceMap.set(s.id, s);
+        if (s.name) serviceMap.set(s.name.trim().toLowerCase(), s);
+      });
+
+      // Aggregate total needed quantity per inventory item ID so duplicate/component items validate accurately
+      const requiredByInvId = new Map<string, { itemName: string; requiredQty: number }>();
+
+      for (const item of orderItems) {
+        const qty = Math.max(1, Number(item.quantity) || 1);
+        const matchedService =
+          (item.serviceId && serviceMap.get(item.serviceId)) ||
+          (item.id && serviceMap.get(item.id)) ||
+          serviceMap.get(item.name.trim().toLowerCase());
+
+        if (matchedService?.inventoryComponents && matchedService.inventoryComponents.length > 0) {
+          for (const comp of matchedService.inventoryComponents) {
+            const invItem = memoryInventory.find(i => i.id === comp.inventoryItemId);
+            const existing = requiredByInvId.get(comp.inventoryItemId);
+            const needed = (Number(comp.quantity) || 1) * qty;
+            requiredByInvId.set(comp.inventoryItemId, {
+              itemName: invItem?.name || item.name,
+              requiredQty: (existing?.requiredQty || 0) + needed
+            });
+          }
+        } else {
+          const directInvId = item.inventoryItemId || matchedService?.inventoryItemId;
+          const invItem = directInvId
+            ? memoryInventory.find(i => i.id === directInvId)
+            : this.findInventoryItemForService(
+                { id: item.serviceId || item.id, name: item.name, inventoryItemId: directInvId },
+                memoryInventory
+              );
+
+          if (invItem) {
+            const existing = requiredByInvId.get(invItem.id);
+            requiredByInvId.set(invItem.id, {
+              itemName: invItem.name,
+              requiredQty: (existing?.requiredQty || 0) + qty
+            });
+          }
+        }
+      }
+
+      // Authoritative stock check against latest Firestore documents before any deduction
+      for (const [invId, req] of requiredByInvId.entries()) {
+        const snap = await getDoc(doc(db, 'inventory', invId));
+        if (snap.exists()) {
+          const currentStock = Number((snap.data() as InventoryItem).currentStock) || 0;
+          if (currentStock < req.requiredQty) {
+            return {
+              success: false,
+              error: `الكمية المطلوبة من "${req.itemName}" (${req.requiredQty}) غير متوفرة في المخزون! المتاح حاليًا: ${currentStock}`
+            };
+          }
+        }
+      }
+
+      // Deduct via existing recordStockMovement mechanism
+      for (const [invId, req] of requiredByInvId.entries()) {
+        await this.recordStockMovement(
+          invId,
+          'sale',
+          req.requiredQty,
+          referenceType,
+          referenceId,
+          noteDetails
+            ? `${noteDetails} - ${req.itemName} (×${req.requiredQty})`
+            : `طلب منتجات مباشر: ${req.itemName} (الكمية: ${req.requiredQty})`
+        );
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Error in validateAndDeductOrderStock:', error);
+      return { success: false, error: error.message || 'Inventory validation error' };
+    }
+  },
+
   subscribeToInventoryItems(callback: (items: InventoryItem[]) => void) {
     const q = query(collection(db, 'inventory'), orderBy('name', 'asc'));
     return onSnapshot(q, (snapshot) => {

@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Clock, MessageCircle, FileText, Printer, Trash2, DoorOpen, Users, Sparkles, Crown, CreditCard, Banknote, ShieldCheck } from 'lucide-react';
+import { Clock, MessageCircle, FileText, Printer, Trash2, DoorOpen, Users, Sparkles, Crown, CreditCard, Banknote, ShieldCheck, ArrowLeftRight } from 'lucide-react';
 import { formatCurrency, formatDuration, toMillis, formatPackageBalance } from '../../../lib/utils-workspace';
 import { handleReprint } from '../utils/printReceipt';
 import { useWorkspaceStore } from '../../../store';
@@ -61,6 +61,13 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
   const numPersons = session.numberOfPersons || session.roomAssignment?.groupSize || 1;
   const roomName = session.roomAssignment?.roomName || (session as any).roomName;
   const tableLabel = session.roomAssignment?.tableLabel || (session.roomAssignment?.tableNumber ? `Table ${session.roomAssignment.tableNumber}` : undefined) || (session as any).tableLabel;
+  const originalRoomName = session.originalRoomAssignment?.roomName;
+  const pkgRoomName = session.packageRoomName;
+  const hasTransferTrail = Boolean(
+    (originalRoomName && originalRoomName !== roomName) ||
+    (pkgRoomName && pkgRoomName !== roomName) ||
+    (session.transferHistory && session.transferHistory.length > 0)
+  );
 
   const startMillis = toMillis(session.startTime || session.createdAt);
   const endMillis = session.endTime ? toMillis(session.endTime) : (session.completedAt ? toMillis(session.completedAt) : null);
@@ -161,6 +168,36 @@ export const HistorySessionDetailModal = React.memo(function HistorySessionDetai
                     <p className="text-[10px] text-slate-400 font-bold uppercase">{isRTL ? 'عدد الأفراد' : 'Persons Count'}</p>
                     <p className="font-bold text-cyan-600 dark:text-cyan-400">{numPersons} {isRTL ? 'أفراد (مضاعفة سعر الوقت)' : 'Persons'}</p>
                   </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Room Transfer Audit Trail */}
+          {hasTransferTrail && (
+            <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs space-y-1.5">
+              <p className="font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                <ArrowLeftRight className="w-4 h-4" />
+                <span>{isRTL ? 'سجل نقل الغرفة' : 'Room Transfer Record'}</span>
+              </p>
+              <div className="flex justify-between text-slate-700 dark:text-slate-300">
+                <span>{isRTL ? 'الغرفة الأصلية / الباقة:' : 'Original / Package Room:'}</span>
+                <span className="font-bold">{originalRoomName || pkgRoomName || '---'}</span>
+              </div>
+              <div className="flex justify-between text-slate-700 dark:text-slate-300">
+                <span>{isRTL ? 'الغرفة المستخدمة فعلياً:' : 'Actual Room Used:'}</span>
+                <span className="font-bold text-cyan-600 dark:text-cyan-400">{roomName || '---'}</span>
+              </div>
+              {session.transferReason && (
+                <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                  <span>{isRTL ? 'السبب:' : 'Reason:'}</span>
+                  <span className="font-semibold">{session.transferReason}</span>
+                </div>
+              )}
+              {session.transferredAt && (
+                <div className="flex justify-between text-slate-500 dark:text-slate-400">
+                  <span>{isRTL ? 'وقت النقل:' : 'Transferred At:'}</span>
+                  <span className="font-mono">{format(toMillis(session.transferredAt), 'yyyy-MM-dd HH:mm')}</span>
                 </div>
               )}
             </div>

@@ -304,15 +304,6 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
       return;
     }
 
-    if (isPackageRoomMismatch && selectedSub) {
-      toast.error(
-        isRTL
-          ? `هذه الباقة مقيدة بغرفة (${selectedSub.roomName || 'الغرفة المحددة'}) فقط ولا يمكن استخدامها في (${selectedRoom?.name || 'غرفة أخرى'}).`
-          : `This package is restricted to (${selectedSub.roomName || 'assigned room'}) only.`
-      );
-      return;
-    }
-
     if (selectedRoomId && currentRoomConflict.hasConflict) {
       toast.error(
         currentRoomConflict.errorMessage || 
@@ -381,7 +372,14 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
         undefined,
         durationMode,
         durationMode === 'fixed' ? selectedHours : undefined,
-        isSharedSpace ? (groupSize || 1) : 1
+        isSharedSpace ? (groupSize || 1) : 1,
+        isPackageRoomMismatch && selectedSub
+          ? {
+              packageRoomId: selectedSub.roomId,
+              packageRoomName: selectedSub.roomName,
+              transferReason: isRTL ? 'استخدام غرفة بديلة للباقة' : 'Alternative room for package'
+            }
+          : undefined
       );
       toast.success(t('newSession.started'));
       resetForm();
@@ -749,18 +747,18 @@ export default function NewSessionModal({ isOpen, onClose }: NewSessionModalProp
                 })}
               </div>
 
-              {/* Package room constraint notice */}
+              {/* Package alternative room informational notice */}
               {isPackageRoomMismatch && selectedSub && (
-                <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="p-3 rounded-2xl bg-violet-500/10 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-violet-500 shrink-0 mt-0.5" />
                   <div>
                     <span className="font-bold">
-                      {isRTL ? 'تنبيه ارتباط الباقة:' : 'Package Room Restriction:'}
+                      {isRTL ? 'استخدام غرفة بديلة للباقة:' : 'Using Alternative Room for Package:'}
                     </span>
                     <p className="mt-0.5 text-[11px] leading-relaxed">
                       {isRTL
-                        ? `هذه الباقة مقيدة للاستخدام في (${selectedSub.roomName || 'الغرفة المحددة'}) فقط.`
-                        : `This package is linked to (${selectedSub.roomName || 'assigned room'}) only.`}
+                        ? `الباقة مسجلة افتراضياً لغرفة (${selectedSub.roomName || 'الغرفة المحددة'}). يمكنك البدء في (${selectedRoom?.name || 'الغرفة المختارة'}) بشكل طبيعي دون تعديل غرفة الباقة أو فرض رسوم إضافية.`
+                        : `Package is normally linked to (${selectedSub.roomName || 'assigned room'}). Session will run in (${selectedRoom?.name || 'selected room'}) without altering the package.`}
                     </p>
                   </div>
                 </div>

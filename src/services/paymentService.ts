@@ -1,6 +1,7 @@
 import { 
   collection, 
   addDoc, 
+  setDoc,
   query, 
   where, 
   onSnapshot, 
@@ -13,12 +14,25 @@ import {
   limit
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Payment, Booking } from '../types';
+import { Payment, PaymentOrderItem, Booking } from '../types';
 import { cleanData } from '../lib/utils';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 
 export interface AddPaymentOptions extends Omit<Payment, 'id' | 'createdAt'> {
   skipBookingPaidUpdate?: boolean;
+}
+
+export interface CreateProductOrderInput {
+  items: PaymentOrderItem[];
+  subtotal: number;
+  serviceDiscountTotal?: number;
+  amount: number;
+  paymentMethod: 'cash' | 'instapay' | 'card';
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  notes?: string;
+  createdBy?: string;
 }
 
 export const paymentService = {
@@ -61,6 +75,80 @@ export const paymentService = {
 
       return docRef.id;
     } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'payments');
+      throw error;
+    }
+  },
+
+  /**
+   * Creates a standalone product-only order (quick sale) without creating a session,
+   * starting a timer, consuming package minutes, or charging room fees.
+   */
+  async createProductOrder(orderInput: CreateProductOrderInput): Promise<Payment> {
+    try {
+      if (!orderInput.items || orderInput.items.length === 0) {
+        throw new Error('EMPTY_ORDER');
+      }
+
+      const paymentRef = doc(collection(db, 'payments'));
+      const now = Date.now();
+      const customerLabel = (orderInput.customerName || '').trim() || 'عميل سريع';
+
+      // 1. Validate and deduct inventory atomically BEFORE writing payment
+      const { inventoryService } = await import('./inventoryService');
+      const stockRes = await inventoryService.validateAndDeductOrderStock(
+        orderInput.items,
+        'product_order',
+        paymentRef.id,
+        `طلب منتجات مباشر (${customerLabel})`
+      );
+
+      if (!stockRes.success) {
+        throw new Error(stockRes.error || 'INSUFFICIENT_STOCK');
+      }
+
+      // 2. Write payment record cleanly marked as product_order
+      const itemSummary = orderInput.items.map(i => `${i.name} ×${i.quantity}`).join('، ');
+      const paymentPayload = cleanData({
+        paymentType: 'product_order' as const,
+        customerId: orderInput.customerId || undefined,
+        customerName: customerLabel,
+        customerPhone: orderInput.customerPhone?.trim() || undefined,
+        items: orderInput.items,
+        subtotal: orderInput.subtotal,
+        serviceDiscountTotal: orderInput.serviceDiscountTotal || 0,
+        amount: orderInput.amount,
+        paymentMethod: orderInput.paymentMethod,
+        date: now,
+        createdAt: now,
+        createdBy: orderInput.createdBy || undefined,
+        notes: orderInput.notes?.trim()
+          ? `${orderInput.notes.trim()} | ${itemSummary}`
+          : `طلب منتجات مباشر (${customerLabel}): ${itemSummary}`,
+      });
+
+      await setDoc(paymentRef, paymentPayload);
+
+      // 3. Update customer totalSpent if registered customer was linked
+      if (orderInput.customerId && orderInput.amount > 0) {
+        try {
+          const { customerService } = await import('./customerService');
+          const cust = await customerService.getCustomerById(orderInput.customerId);
+          if (cust) {
+            await customerService.updateCustomer(orderInput.customerId, {
+              totalSpent: (cust.totalSpent || 0) + orderInput.amount
+            });
+          }
+        } catch (custErr) {
+          console.warn('Could not update customer totalSpent for product order:', custErr);
+        }
+      }
+
+      return { id: paymentRef.id, ...paymentPayload } as Payment;
+    } catch (error) {
+      if (error instanceof Error && (error.message === 'EMPTY_ORDER' || error.message.includes('المخزون'))) {
+        throw error;
+      }
       handleFirestoreError(error, OperationType.CREATE, 'payments');
       throw error;
     }

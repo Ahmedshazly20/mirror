@@ -49,6 +49,8 @@ interface WorkspaceState {
   // UI State
   isNewSessionModalOpen: boolean;
   setIsNewSessionModalOpen: (open: boolean) => void;
+  isQuickOrderModalOpen: boolean;
+  setIsQuickOrderModalOpen: (open: boolean) => void;
 
   // Loading States
   isLoading: boolean;
@@ -140,6 +142,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   
   isNewSessionModalOpen: false,
   setIsNewSessionModalOpen: (isNewSessionModalOpen) => set({ isNewSessionModalOpen }),
+  isQuickOrderModalOpen: false,
+  setIsQuickOrderModalOpen: (isQuickOrderModalOpen) => set({ isQuickOrderModalOpen }),
 
   isLoading: false,
   setIsLoading: (loading) => set({ isLoading: loading }),
