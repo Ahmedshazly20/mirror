@@ -80,14 +80,14 @@ export const formatExpenseForExport = (expenses: any[], t: any) => {
 
 export const formatProductOrderForExport = (orders: any[]) => {
   return orders.map(p => ({
-    'التاريخ': new Date(p.date || p.createdAt).toLocaleString('ar-EG'),
+    'التاريخ': new Date(p.date ?? p.createdAt).toLocaleString('ar-EG'),
     'العميل': p.customerName || 'عميل سريع',
     'الهاتف': p.customerPhone || '---',
     'الأصناف': (p.items || []).map((i: any) => `${i.name} ×${i.quantity}`).join('، '),
     'المجموع الفرعي': p.subtotal ?? p.amount,
     'الخصم': p.serviceDiscountTotal || 0,
     'الإجمالي المحصل': p.amount,
-    'طريقة الدفع': p.paymentMethod === 'instapay' ? 'InstaPay' : 'Cash',
+    'طريقة الدفع': p.paymentMethod === 'instapay' ? 'InstaPay' : p.paymentMethod === 'card' ? 'Card' : 'Cash',
     'ملاحظات': p.notes || ''
   }));
 };

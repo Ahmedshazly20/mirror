@@ -9,10 +9,7 @@ import {
   RotateCw,
   Clock,
   Coffee,
-  Sparkles,
-  Users,
-  DoorOpen,
-  Receipt
+  ShoppingBag
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -24,63 +21,85 @@ import {
 } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { useWorkspaceStore } from '../store';
-import { formatCurrency, toMillis, getSessionTimestamp, isSameCalendarDay, getSessionDateMillis } from '../lib/utils-workspace';
+import { formatCurrency, isSameCalendarDay } from '../lib/utils-workspace';
 import { format } from 'date-fns';
 import { arSA, enUS } from 'date-fns/locale';
 import { sessionService } from '../services/sessionService';
+import { paymentService } from '../services/paymentService';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import { exportToExcel, formatSessionForExport } from '../lib/exportUtils';
+import { exportToExcel, formatSessionForExport, formatProductOrderForExport } from '../lib/exportUtils';
 import { HistorySessionCard } from '../features/sessions/components/HistorySessionCard';
 import { HistorySessionDetailModal } from '../features/sessions/components/HistorySessionDetailModal';
-import { Session } from '../types';
+import { HistoryProductOrderCard } from '../features/sessions/components/HistoryProductOrderCard';
+import { HistoryProductOrderDetailModal } from '../features/sessions/components/HistoryProductOrderDetailModal';
+import {
+  buildCustomerLookupMaps,
+  buildHistoryTransactions,
+  getDayCompletedSessions,
+  getDayProductOrders,
+  HistoryCategoryFilter,
+  isRoomSession,
+  isSubscriberSession,
+} from '../features/sessions/utils/historyTransactions';
+import { Payment, Session } from '../types';
 
 export default function SessionHistory() {
   const { t, i18n } = useTranslation();
-  const { completedSessions, setCompletedSessions, user, customers } = useWorkspaceStore();
+  const { completedSessions, payments, user, customers } = useWorkspaceStore();
   const isOwner = user?.role === 'owner';
   
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'guests' | 'subscribers' | 'rooms'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<HistoryCategoryFilter>('all');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [selectedProductOrder, setSelectedProductOrder] = useState<Payment | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingDate, setIsLoadingDate] = useState(false);
 
   const isRTL = i18n.language.startsWith('ar');
   const dateLocale = isRTL ? arSA : enUS;
+  const selectedDayKey = format(selectedDate, 'yyyy-MM-dd');
 
-  // On-demand date range query whenever selectedDate changes
-  const loadDateSessions = useCallback(async (date: Date) => {
+  // On-demand date range query for both completed sessions and payments whenever selected calendar day changes
+  const loadDateTransactions = useCallback(async (date: Date) => {
     if (!date) return;
     setIsLoadingDate(true);
     try {
       const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
       const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
-      await sessionService.getCompletedSessionsByDateRange(dayStart.getTime(), dayEnd.getTime());
+      const startMs = dayStart.getTime();
+      const endMs = dayEnd.getTime();
+
+      await Promise.allSettled([
+        sessionService.getCompletedSessionsByDateRange(startMs, endMs),
+        paymentService.getPaymentsByDateRange(startMs, endMs),
+      ]);
     } catch (err) {
-      console.warn('Could not fetch sessions for date:', err);
+      console.warn('Could not fetch history for date:', err);
     } finally {
       setIsLoadingDate(false);
     }
   }, []);
 
   useEffect(() => {
-    loadDateSessions(selectedDate);
-  }, [selectedDate, loadDateSessions]);
+    loadDateTransactions(selectedDate);
+    // Intentionally keyed by calendar day so selecting the same date or changing local filters avoids duplicate reads
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDayKey, loadDateTransactions]);
 
-  // Real-time listener fallback & manual refresh for the selected day
+  // Manual refresh for the selected day
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await loadDateSessions(selectedDate);
-      toast.success(isRTL ? 'تم تحديث سجل الجلسات' : 'History updated');
+      await loadDateTransactions(selectedDate);
+      toast.success(isRTL ? 'تم تحديث سجل المعاملات' : 'History updated');
     } catch (e) {
-      console.warn('Could not refresh completed sessions:', e);
+      console.warn('Could not refresh history:', e);
     } finally {
       setIsRefreshing(false);
     }
-  }, [selectedDate, loadDateSessions, isRTL]);
+  }, [selectedDate, loadDateTransactions, isRTL]);
 
   const handlePrevDate = useCallback(() => {
     setSelectedDate(prev => {
@@ -98,54 +117,24 @@ export default function SessionHistory() {
     });
   }, []);
 
-  // Precompute customer lookups for super fast and accurate customer ID searches
-  const customerMaps = useMemo(() => {
-    const byId = new Map<string, typeof customers[0]>();
-    const byPhone = new Map<string, typeof customers[0]>();
-    const byNumericId = new Map<number, typeof customers[0]>();
-    const byName = new Map<string, typeof customers[0]>();
+  // Precompute customer lookups for super fast and accurate customer ID/name/phone searches
+  const customerMaps = useMemo(() => buildCustomerLookupMaps(customers), [customers]);
 
-    (customers || []).forEach(c => {
-      if (c.id) byId.set(c.id, c);
-      if (c.phone) byPhone.set(c.phone.trim(), c);
-      if (c.customerId !== undefined && c.customerId !== null) {
-        byNumericId.set(Number(c.customerId), c);
-      }
-      if (c.name) byName.set(c.name.trim().toLowerCase(), c);
-    });
+  // Completed sessions strictly on the selected local calendar day (startTime primary, createdAt fallback)
+  const daySessions = useMemo(
+    () => getDayCompletedSessions(completedSessions, selectedDate),
+    [completedSessions, selectedDate],
+  );
 
-    return { byId, byPhone, byNumericId, byName };
-  }, [customers]);
+  // Standalone product orders strictly on the selected local calendar day (paymentType === 'product_order')
+  const dayProductOrders = useMemo(
+    () => getDayProductOrders(payments, selectedDate),
+    [payments, selectedDate],
+  );
 
-  // Robust classification helpers for rooms, subscribers, and guests
-  const isRoomSession = useCallback((session: Session) => {
-    if (session.bookingId || session.pricingType === 'booking') return true;
-    if (session.roomAssignment && (session.roomAssignment.roomId || session.roomAssignment.roomName)) return true;
-    if ((session as any).roomId || (session as any).roomName) return true;
-    return false;
-  }, []);
-
-  const isSubscriberSession = useCallback((session: Session) => {
-    return Boolean(session.isSubscribed || session.subscriptionId || session.pricingType === 'subscription');
-  }, []);
-
-  const isGuestSession = useCallback((session: Session) => {
-    return !isRoomSession(session) && !isSubscriberSession(session);
-  }, [isRoomSession, isSubscriberSession]);
-
-  // All completed sessions belonging strictly to the selected local calendar day (startTime primary, createdAt fallback)
-  const daySessions = useMemo(() => {
-    return completedSessions.filter(session => {
-      if (!session) return false;
-      const sessionDateMs = getSessionDateMillis(session);
-      if (sessionDateMs === null) return false;
-      return isSameCalendarDay(sessionDateMs, selectedDate);
-    });
-  }, [completedSessions, selectedDate]);
-
-  // Daily Metrics computed across the entire selected day (stable and accurate regardless of active filter)
+  // Daily Metrics computed across the entire selected day (stable regardless of active filter)
   const dailyStats = useMemo(() => {
-    let totalRevenue = 0;
+    let sessionsRevenue = 0;
     let totalTimeCost = 0;
     let totalServicesCost = 0;
     let guestCount = 0;
@@ -153,7 +142,7 @@ export default function SessionHistory() {
     let roomCount = 0;
 
     daySessions.forEach(s => {
-      totalRevenue += s.totalCost || 0;
+      sessionsRevenue += s.totalCost || 0;
       totalTimeCost += s.timeCost || 0;
       totalServicesCost += s.servicesCost || 0;
 
@@ -166,76 +155,38 @@ export default function SessionHistory() {
       }
     });
 
+    let productOrdersRevenue = 0;
+    dayProductOrders.forEach(p => {
+      productOrdersRevenue += Number(p.amount) || 0;
+    });
+
     return {
-      totalRevenue,
+      totalRevenue: sessionsRevenue + productOrdersRevenue,
+      sessionsRevenue,
+      productOrdersRevenue,
       totalTimeCost,
       totalServicesCost,
-      totalCount: daySessions.length,
+      totalCount: daySessions.length + dayProductOrders.length,
+      sessionsCount: daySessions.length,
+      productOrderCount: dayProductOrders.length,
       guestCount,
       subscriberCount,
       roomCount
     };
-  }, [daySessions, isRoomSession, isSubscriberSession]);
+  }, [daySessions, dayProductOrders]);
 
-  // Filtered Sessions for the active category filter & search query
-  const filteredSessions = useMemo(() => {
-    const searchLower = searchQuery.toLowerCase().trim();
-    const cleanSearch = searchLower.replace(/^#/, '');
-
-    return daySessions.filter(session => {
-      // 1. Category Filter
-      if (categoryFilter === 'guests' && !isGuestSession(session)) return false;
-      if (categoryFilter === 'subscribers' && !isSubscriberSession(session)) return false;
-      if (categoryFilter === 'rooms' && !isRoomSession(session)) return false;
-
-      // 2. Search Query Filter
-      if (searchLower) {
-        // Resolve linked customer profile
-        const sessionCust = 
-          (session.customerId && customerMaps.byId.get(session.customerId)) ||
-          ((session as any).customerNumericId && customerMaps.byNumericId.get(Number((session as any).customerNumericId))) ||
-          (session.phoneNumber && customerMaps.byPhone.get(session.phoneNumber.trim())) ||
-          (session.userName && customerMaps.byName.get(session.userName.trim().toLowerCase()));
-
-        const custNumId = sessionCust?.customerId?.toString() || ((session as any).customerNumericId?.toString() || '');
-
-        // Match by customer ID: e.g. "12", "#12"
-        const matchesCustomerId = 
-          Boolean(custNumId && (custNumId === cleanSearch || custNumId.includes(cleanSearch))) ||
-          Boolean(session.customerId && session.customerId.toLowerCase().includes(searchLower));
-
-        // Match by Name
-        const matchesName = 
-          session.userName?.toLowerCase().includes(searchLower) ||
-          (sessionCust?.name && sessionCust.name.toLowerCase().includes(searchLower));
-
-        // Match by Phone
-        const matchesPhone = 
-          (session.phoneNumber && session.phoneNumber.includes(cleanSearch)) ||
-          (sessionCust?.phone && sessionCust.phone.includes(cleanSearch));
-
-        // Match by Room / Table / Notes
-        const roomNameStr = (session.roomAssignment?.roomName || (session as any).roomName || '').toLowerCase();
-        const tableLabelStr = (session.roomAssignment?.tableLabel || (session as any).tableLabel || '').toLowerCase();
-        const tableNumberStr = session.roomAssignment?.tableNumber?.toString() || (session as any).tableNumber?.toString() || '';
-        const notesStr = (session.notes || '').toLowerCase();
-
-        const matchesRoom = roomNameStr.includes(searchLower);
-        const matchesTable = tableLabelStr.includes(searchLower) || (cleanSearch && tableNumberStr.includes(cleanSearch));
-        const matchesNotes = notesStr.includes(searchLower);
-
-        if (!matchesCustomerId && !matchesName && !matchesPhone && !matchesRoom && !matchesTable && !matchesNotes) {
-          return false;
-        }
-      }
-
-      return true;
-    }).sort((a, b) => {
-      const aTime = toMillis(a.startTime ?? a.createdAt);
-      const bTime = toMillis(b.startTime ?? b.createdAt);
-      return bTime - aTime;
-    });
-  }, [daySessions, categoryFilter, searchQuery, isGuestSession, isSubscriberSession, isRoomSession, customerMaps]);
+  // Combined, filtered, and newest-first sorted transactions (sessions + standalone product orders)
+  const filteredTransactions = useMemo(
+    () =>
+      buildHistoryTransactions({
+        daySessions,
+        dayProductOrders,
+        categoryFilter,
+        searchQuery,
+        customerMaps,
+      }),
+    [daySessions, dayProductOrders, categoryFilter, searchQuery, customerMaps],
+  );
 
   const handleDeleteSession = useCallback(async (id: string) => {
     if (window.confirm(t('sessions.deleteConfirm'))) {
@@ -257,14 +208,41 @@ export default function SessionHistory() {
     setSelectedSession(null);
   }, []);
 
+  const handleSelectProductOrder = useCallback((payment: Payment) => {
+    setSelectedProductOrder(payment);
+  }, []);
+
+  const handleCloseProductOrderModal = useCallback(() => {
+    setSelectedProductOrder(null);
+  }, []);
+
   const handleExport = useCallback(() => {
-    if (filteredSessions.length > 0) {
-      exportToExcel(formatSessionForExport(filteredSessions, t), `History_Sessions_${format(selectedDate, 'yyyy-MM-dd')}`);
+    const filteredSessionsList = filteredTransactions
+      .filter((tx): tx is Extract<typeof tx, { kind: 'session' }> => tx.kind === 'session')
+      .map((tx) => tx.session);
+    const filteredOrdersList = filteredTransactions
+      .filter((tx): tx is Extract<typeof tx, { kind: 'product_order' }> => tx.kind === 'product_order')
+      .map((tx) => tx.payment);
+
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+
+    if (categoryFilter === 'product_orders' || (filteredSessionsList.length === 0 && filteredOrdersList.length > 0)) {
+      if (filteredOrdersList.length > 0) {
+        exportToExcel(formatProductOrderForExport(filteredOrdersList), `History_Product_Orders_${dateStr}`);
+        toast.success(t('common.success'));
+      } else {
+        toast.error(t('sessions.noSessions'));
+      }
+      return;
+    }
+
+    if (filteredSessionsList.length > 0) {
+      exportToExcel(formatSessionForExport(filteredSessionsList, t), `History_Sessions_${dateStr}`);
       toast.success(t('common.success'));
     } else {
       toast.error(t('sessions.noSessions'));
     }
-  }, [filteredSessions, selectedDate, t]);
+  }, [filteredTransactions, categoryFilter, selectedDate, t]);
 
   const isTodaySelected = isSameCalendarDay(selectedDate, new Date());
   const yesterdayDate = new Date();
@@ -365,7 +343,7 @@ export default function SessionHistory() {
           <div className="relative flex-1 min-w-[150px]">
             <Search className={cn("absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400", isRTL ? 'right-4' : 'left-4')} />
             <Input 
-              placeholder={isRTL ? "بحث بالاسم، الهاتف، الغرفة..." : "Search by name, phone, room..."}
+              placeholder={isRTL ? "بحث بالاسم، الهاتف، الغرفة، أو المنتج..." : "Search by name, phone, room, or product..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={cn("bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 w-full h-[52px] rounded-2xl text-xs font-semibold focus:ring-4 focus:ring-cyan-500/10 transition-all", isRTL ? 'pr-11' : 'pl-11')}
@@ -409,7 +387,7 @@ export default function SessionHistory() {
       {/* ── Summary Stats Bar & Category Filter Toggles ── */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
         {/* Category Filter Tabs */}
-        <div className="flex items-center gap-1 bg-white dark:bg-slate-900/50 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 self-start">
+        <div className="flex flex-wrap items-center gap-1 bg-white dark:bg-slate-900/50 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 self-start">
           <button
             type="button"
             onClick={() => setCategoryFilter('all')}
@@ -420,7 +398,7 @@ export default function SessionHistory() {
                 : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
             )}
           >
-            {isRTL ? `جميع الجلسات (${dailyStats.totalCount})` : `All (${dailyStats.totalCount})`}
+            {isRTL ? `الكل (${dailyStats.totalCount})` : `All (${dailyStats.totalCount})`}
           </button>
           <button
             type="button"
@@ -458,50 +436,80 @@ export default function SessionHistory() {
           >
             {isRTL ? `غرف (${dailyStats.roomCount})` : `Rooms (${dailyStats.roomCount})`}
           </button>
+          <button
+            type="button"
+            onClick={() => setCategoryFilter('product_orders')}
+            className={cn(
+              "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1",
+              categoryFilter === 'product_orders'
+                ? "bg-amber-500 text-white shadow-sm"
+                : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+            )}
+          >
+            <ShoppingBag className="w-3 h-3" />
+            <span>{isRTL ? `طلبات منتجات (${dailyStats.productOrderCount})` : `Product Orders (${dailyStats.productOrderCount})`}</span>
+          </button>
         </div>
 
         {/* Breakdown Badges */}
-        <div className="flex items-center gap-3 text-xs font-bold text-slate-500">
+        <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-slate-500">
           <span className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 px-3 py-1.5 rounded-xl">
             <Clock className="w-3.5 h-3.5 text-cyan-500" />
             <span>{isRTL ? 'الوقت:' : 'Time:'} <strong className="text-slate-800 dark:text-slate-200 font-mono">{formatCurrency(dailyStats.totalTimeCost)}</strong></span>
           </span>
           {dailyStats.totalServicesCost > 0 && (
+            <span className="flex items-center gap-1.5 bg-cyan-50 dark:bg-cyan-950/30 text-cyan-700 dark:text-cyan-400 border border-cyan-500/20 px-3 py-1.5 rounded-xl">
+              <Coffee className="w-3.5 h-3.5 text-cyan-500" />
+              <span>{isRTL ? 'خدمات الجلسات:' : 'Session Services:'} <strong className="font-mono">{formatCurrency(dailyStats.totalServicesCost)}</strong></span>
+            </span>
+          )}
+          {dailyStats.productOrdersRevenue > 0 && (
             <span className="flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border border-amber-500/20 px-3 py-1.5 rounded-xl">
-              <Coffee className="w-3.5 h-3.5 text-amber-500" />
-              <span>{isRTL ? 'الخدمات:' : 'Services:'} <strong className="font-mono">{formatCurrency(dailyStats.totalServicesCost)}</strong></span>
+              <ShoppingBag className="w-3.5 h-3.5 text-amber-500" />
+              <span>{isRTL ? 'طلبات المنتجات:' : 'Product Orders:'} <strong className="font-mono">{formatCurrency(dailyStats.productOrdersRevenue)}</strong></span>
             </span>
           )}
         </div>
       </div>
 
-      {/* ── Sessions List ── */}
+      {/* ── Transactions List (Sessions + Standalone Product Orders) ── */}
       <div className="grid grid-cols-1 gap-4">
-        {isLoadingDate && daySessions.length === 0 ? (
+        {isLoadingDate && daySessions.length === 0 && dayProductOrders.length === 0 ? (
           <div className="py-24 text-center bg-white dark:bg-slate-900/10 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2.5rem]">
             <RotateCw className="w-8 h-8 text-cyan-500 animate-spin mx-auto mb-3" />
             <p className="text-slate-600 dark:text-slate-400 font-bold text-sm">
-              {isRTL ? 'جاري تحميل الجلسات...' : 'Loading sessions...'}
+              {isRTL ? 'جاري تحميل السجل...' : 'Loading history...'}
             </p>
           </div>
         ) : (
           <>
-            {filteredSessions.map((session) => (
-              <HistorySessionCard 
-                key={session.id}
-                session={session}
-                isRTL={isRTL}
-                onSelect={handleSelectSession}
-              />
-            ))}
+            {filteredTransactions.map((tx) =>
+              tx.kind === 'session' ? (
+                <HistorySessionCard
+                  key={`session_${tx.id}`}
+                  session={tx.session}
+                  isRTL={isRTL}
+                  onSelect={handleSelectSession}
+                />
+              ) : (
+                <HistoryProductOrderCard
+                  key={`order_${tx.id}`}
+                  payment={tx.payment}
+                  isRTL={isRTL}
+                  onSelect={handleSelectProductOrder}
+                />
+              ),
+            )}
 
-            {filteredSessions.length === 0 && (
+            {filteredTransactions.length === 0 && (
               <div className="py-24 text-center bg-white dark:bg-slate-900/10 border border-dashed border-slate-200 dark:border-slate-800 rounded-[2.5rem]">
                 <div className="w-20 h-20 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center mx-auto mb-5 text-slate-400">
                   <CalendarDays className="w-10 h-10 opacity-40" />
                 </div>
                 <p className="text-slate-700 dark:text-slate-300 font-bold text-lg">
-                  {searchQuery ? (isRTL ? 'لا توجد جلسات تطابق البحث' : 'No matching sessions found') : t('sessions.noSessionsFound')}
+                  {searchQuery
+                    ? (isRTL ? 'لا توجد معاملات تطابق البحث' : 'No matching transactions found')
+                    : (isRTL ? 'لا توجد جلسات أو طلبات في هذا التاريخ' : t('sessions.noSessionsFound'))}
                 </p>
                 <p className="text-slate-400 text-sm mt-1.5">
                   {format(selectedDate, "PP", { locale: dateLocale })}
@@ -519,6 +527,13 @@ export default function SessionHistory() {
         dateLocale={dateLocale}
         isOwner={isOwner}
         onDelete={handleDeleteSession}
+      />
+
+      <HistoryProductOrderDetailModal
+        payment={selectedProductOrder}
+        isOpen={selectedProductOrder !== null}
+        onClose={handleCloseProductOrderModal}
+        dateLocale={dateLocale}
       />
     </div>
   );
